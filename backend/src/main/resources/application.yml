@@ -1,0 +1,30 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: career-compass-backend
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3307/career_compass?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${SPRING_DATASOURCE_USERNAME:career_compass}
+    password: ${SPRING_DATASOURCE_PASSWORD:career_compass_pwd}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+app:
+  admin-token: ${ADMIN_TOKEN:change-me-admin-token}
+  jwt-secret: ${JWT_SECRET:career-compass-local-secret-change-me}
+  student-email-pattern: '${STUDENT_EMAIL_PATTERN:^\d{10}@st\.usst\.edu\.cn$}'
+  graduation-years: ${GRADUATION_YEARS:2025,2026,2027}
+  expose-dev-verification-codes: ${EXPOSE_DEV_VERIFICATION_CODES:true}
+  llm:
+    enabled: ${LLM_ENABLED:false}
+    api-key: ${LLM_API_KEY:}
+    base-url: ${LLM_BASE_URL:https://api.deepseek.com}
+    model: ${LLM_MODEL:deepseek-v4-flash}
+    timeout-seconds: ${LLM_TIMEOUT_SECONDS:60}
