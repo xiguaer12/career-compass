@@ -8,32 +8,13 @@
 - 后端：Spring Boot 3 + Java 21 REST API
 - 部署：Docker Compose + MySQL 8.0 + Redis 7 + Nginx
 
-## 本地开发
+## Docker 启动
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-前端默认运行在 `http://localhost:5173`，并代理 `/api` 与 `/admin` 到 `http://localhost:8080`。
-
-后端本机需要 Maven；若未安装 Maven，可直接用 Docker Compose 构建：
+项目默认使用 Docker Compose 运行，前端由 Nginx 容器提供服务：
 
 ```bash
 copy .env.example .env
 docker compose up --build
-```
-
-完整容器启动前请先在本机生成前后端产物：
-
-```bash
-cd frontend
-npm install
-npm run build
-
-cd ../backend
-..\.tools\apache-maven-3.9.9\bin\mvn.cmd -q -DskipTests package
 ```
 
 完整容器启动后访问：
@@ -42,6 +23,18 @@ cd ../backend
 - 后端健康检查：`http://localhost:8080/api/health`
 - MySQL 宿主机端口默认：`3307`（容器内仍为 `3306`）
 - 后台接口需要请求头：`X-Admin-Token: change-me-admin-token`
+
+## 本地开发
+
+只有在不通过 Docker、单独调试前端时，才需要启动 Vite 开发服务器：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+此时前端开发服务器运行在 `http://localhost:5173`，并代理 `/api` 与 `/admin` 到 `http://localhost:8080`。
 
 ## 主要接口
 
