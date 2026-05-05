@@ -21,7 +21,7 @@ docker compose up --build
 
 - 前端：`http://localhost`
 - 后端健康检查：`http://localhost:8080/api/health`
-- MySQL 宿主机端口默认：`3307`（容器内仍为 `3306`）
+- MySQL 端口：`3306`
 - 后台接口需要请求头：`X-Admin-Token: change-me-admin-token`
 
 ## 本地开发
