@@ -37,7 +37,7 @@ import {
   UserRound,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -316,6 +316,8 @@ function App() {
   const [communityDetailOnly, setCommunityDetailOnly] = useState(false);
   const [selectedPathKey, setSelectedPathKey] = useState("");
   const [notice, setNotice] = useState("");
+  const pathScrollYRef = useRef(0);
+  const pendingPathScrollYRef = useRef<number | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -381,6 +383,18 @@ function App() {
     setReportTask(null);
   }
 
+  function rememberPathScrollPosition() {
+    const y = window.scrollY || document.documentElement.scrollTop || 0;
+    pathScrollYRef.current = y;
+    console.log("[scroll] SAVE", { windowScrollY: window.scrollY, docScrollTop: document.documentElement.scrollTop, saved: y });
+  }
+
+  function returnToPathsWithScroll() {
+    pendingPathScrollYRef.current = pathScrollYRef.current;
+    console.log("[scroll] RETURN", { pending: pendingPathScrollYRef.current });
+    setActiveTab("paths");
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="主导航">
@@ -441,11 +455,14 @@ function App() {
             session={session}
             selectedPathKey={selectedPathKey}
             onSelectedPathKeyChange={setSelectedPathKey}
+            pendingScrollRef={pendingPathScrollYRef}
             onOpenChart={(chart) => {
+              rememberPathScrollPosition();
               setChartToOpen(chart.id);
               setActiveTab("charts");
             }}
             onOpenCommunityPost={(post) => {
+              rememberPathScrollPosition();
               setCommunityPostToOpen(post.id);
               setCommunityDetailOnly(true);
               setActiveTab("community");
@@ -458,7 +475,7 @@ function App() {
             openChartId={chartToOpen}
             onBackToPaths={chartToOpen ? () => {
               setChartToOpen(null);
-              setActiveTab("paths");
+              returnToPathsWithScroll();
             } : undefined}
           />
         )}
@@ -473,7 +490,7 @@ function App() {
             onBackToPaths={communityDetailOnly ? () => {
               setCommunityPostToOpen(null);
               setCommunityDetailOnly(false);
-              setActiveTab("paths");
+              returnToPathsWithScroll();
             } : undefined}
           />
         )}
@@ -1432,6 +1449,7 @@ function PathsView({
   session,
   selectedPathKey,
   onSelectedPathKeyChange,
+  pendingScrollRef,
   onOpenChart,
   onOpenCommunityPost
 }: {
@@ -1439,6 +1457,7 @@ function PathsView({
   session: Session | null;
   selectedPathKey: string;
   onSelectedPathKeyChange: (key: string) => void;
+  pendingScrollRef: React.MutableRefObject<number | null>;
   onOpenChart: (chart: ChartItem) => void;
   onOpenCommunityPost: (post: CommunityPost) => void;
 }) {
@@ -1473,6 +1492,59 @@ function PathsView({
       studentApi.recordActivity(session.token, "path", selected.key, `${selected.name}路径页`, `/paths/${selected.key}`).catch(() => undefined);
     }
   }, [selected?.key, selected?.name, session?.token]);
+
+  // 从图表/问答返回时恢复滚动位置，等数据加载完 DOM 落位后再滚
+  const scrollRestoredRef = useRef(false);
+  useEffect(() => {
+    console.log("[scroll] RESTORE effect firing", {
+      hasSelected: !!selected,
+      hasPathPage: !!pathPage,
+      pendingScroll: pendingScrollRef.current,
+      alreadyRestored: scrollRestoredRef.current,
+      scrollHeight: document.documentElement.scrollHeight,
+      currentScrollY: window.scrollY,
+    });
+
+    if (!selected || !pathPage || pendingScrollRef.current === null) return;
+    if (scrollRestoredRef.current) return;
+    scrollRestoredRef.current = true;
+
+    const scrollY = pendingScrollRef.current;
+    console.log("[scroll] RESTORE starting", { target: scrollY });
+
+    const restore = () => {
+      const before = window.scrollY;
+      if (document.documentElement.scrollHeight > scrollY) {
+        window.scrollTo({ top: scrollY, left: 0, behavior: "auto" });
+        console.log("[scroll] RESTORE attempt", { target: scrollY, before, after: window.scrollY, scrollHeight: document.documentElement.scrollHeight });
+      } else {
+        console.log("[scroll] RESTORE skipped (page too short)", { target: scrollY, scrollHeight: document.documentElement.scrollHeight });
+      }
+    };
+
+    restore();
+    let raf1 = 0;
+    let raf2 = 0;
+    raf1 = window.requestAnimationFrame(() => {
+      restore();
+      raf2 = window.requestAnimationFrame(() => {
+        restore();
+        // consume the ref after the DOM has settled
+        pendingScrollRef.current = null;
+        console.log("[scroll] RESTORE complete, ref consumed");
+      });
+    });
+    const t1 = window.setTimeout(restore, 160);
+    const t2 = window.setTimeout(restore, 420);
+
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      scrollRestoredRef.current = false;
+    };
+  }, [selected, pathPage, pendingScrollRef]);
 
   if (!selected) {
     return (
@@ -3314,8 +3386,8 @@ function ResourceTable({ filter }: { filter?: string }) {
                   <a
                     className="icon-button"
                     title={`下载${resource.name}`}
-                    href={resource.url}
-                    download
+                    href={`${resource.url}?t=${Date.now()}`}
+                    download={`${resource.name}.${resource.format.toLowerCase()}`}
                     aria-label={`下载${resource.name}`}
                   >
                     <Download size={16} />
