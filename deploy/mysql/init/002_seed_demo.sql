@@ -42,37 +42,87 @@ ON DUPLICATE KEY UPDATE
 
 INSERT INTO chart_info (id, title, chart_type, path, data_json, methodology, source_name, source_url, status, visibility, display_position)
 VALUES
-  (1, '2021-2025 届本科毕业去向趋势', '趋势图', '全部', json_object('rows', json_array(
-      json_object('year','2021','考公',18.4,'考研',36.2,'就业',45.4),
-      json_object('year','2022','考公',20.1,'考研',35.7,'就业',44.2),
-      json_object('year','2023','考公',22.8,'考研',33.4,'就业',43.8),
-      json_object('year','2024','考公',24.2,'考研',32.8,'就业',43.0),
-      json_object('year','2025','考公',25.6,'考研',31.9,'就业',42.5)
-    )), '本科毕业去向比例，比例类数据保留 1 位小数', '校内就业质量数据与管理员审核后的公开权威来源', 'https://career.example.edu.cn', '已发布', '公开', '图表中心'),
-  (2, '当前样本匹配分布', '环图', '全部', json_object('rows', json_array(
-      json_object('path','就业','score',88),
-      json_object('path','考公','score',82),
-      json_object('path','考研','score',76)
-    )), '三路径匹配分 0-100 整数', '问卷输入快照', null, '已发布', '公开', '首页'),
-  (3, '各学院路径选择样本', '柱状图', '全部', json_object('rows', json_array(
-      json_object('label','光电信息与计算机工程学院','就业',52,'考研',31,'考公',17),
-      json_object('label','管理学院','就业',44,'考研',26,'考公',30),
-      json_object('label','外语学院','就业',49,'考研',22,'考公',29)
-    )), '按学院统计已完成问卷学生主路径分布', '问卷输入快照', null, '已发布', '公开', '图表中心'),
-  (4, '三路径能力维度雷达', '雷达图', '全部', json_object('rows', json_array(
-      json_object('subject','确定性','就业',63,'考研',68,'考公',84),
-      json_object('subject','成长性','就业',82,'考研',86,'考公',66),
-      json_object('subject','现金流','就业',88,'考研',44,'考公',58),
-      json_object('subject','准备周期','就业',64,'考研',78,'考公',72)
-    )), '基于问卷维度归一化到 0-100 分', '问卷输入快照', null, '已发布', '公开', '图表中心'),
-  (5, '校招准备时间线', '时间线图', '就业', json_object('rows', json_array(
-      json_object('stage','5-6 月','description','整理项目经历、确定岗位方向'),
-      json_object('stage','7-8 月','description','完善简历与作品材料'),
-      json_object('stage','9-10 月','description','密集投递并记录面试复盘'),
-      json_object('stage','11-12 月','description','Offer 对比与签约决策')
-    )), '按校招常见节奏整理的时间节点', '校内就业服务中心', null, '已发布', '公开', '图表中心')
+  (1, '2024-2026 高校毕业生规模', '趋势图', '全部', json_object(
+      'xKey','year',
+      'series', json_array(json_object('key','graduates','name','高校毕业生规模（万人）','color','#b45309')),
+      'insights', json_array('2026 届规模预计约 1270 万人，继续处在高位。','就业方向需要更早完成岗位画像、实习经历和投递节奏管理。'),
+      'rows', json_array(
+        json_object('year','2024','graduates',1179),
+        json_object('year','2025','graduates',1222),
+        json_object('year','2026','graduates',1270)
+      )
+    ), '按教育部公开发布的当届全国普通高校毕业生预计规模统计，单位为万人。', '教育部、央视网（据教育部）', 'https://news.cctv.com/2025/11/20/ARTI0xYbzeyS5Y6Zky3R3VZg251120.shtml', '已发布', '公开', '首页'),
+  (2, '2022-2026 研考报名人数变化', '趋势图', '考研', json_object(
+      'xKey','year',
+      'series', json_array(json_object('key','applicants','name','研考报名人数（万人）','color','#0f766e')),
+      'insights', json_array('研考报名人数连续三年回落，不代表目标院校竞争同步下降。','应结合专业目录、复试线、推免比例与调剂空间判断真实难度。'),
+      'rows', json_array(
+        json_object('year','2022','applicants',457),
+        json_object('year','2023','applicants',474),
+        json_object('year','2024','applicants',438),
+        json_object('year','2025','applicants',388),
+        json_object('year','2026','applicants',343)
+      )
+    ), '全国硕士研究生招生考试报名人数，单位为万人；用于观察总体热度，不替代院校专业层面的录取难度分析。', '教育部、央视网（据教育部）', 'https://news.cctv.cn/2025/11/24/ARTINT5iuLLp0mtEfdDd7Kkl251124.shtml', '已发布', '公开', '图表中心'),
+  (3, '2024-2026 国考资格审查竞争比', '趋势图', '考公', json_object(
+      'xKey','year',
+      'series', json_array(json_object('key','ratio','name','约每个录用计划对应过审人数','color','#2563eb')),
+      'insights', json_array('2026 年国考约 98:1，岗位筛选比单纯刷题更早决定上限。','考公规划应同时关注国考、省考、事业单位和选调等不同机会窗口。'),
+      'rows', json_array(
+        json_object('year','2024','ratio',77),
+        json_object('year','2025','ratio',86),
+        json_object('year','2026','ratio',98)
+      )
+    ), '以官方公布的资格审查通过人数与计划招录人数估算，展示约数竞争比。', '中国政府网、国家公务员局', 'https://www.gov.cn/lianbo/bumen/202510/content_7036992.htm', '已发布', '公开', '图表中心'),
+  (4, '2026 国考招录与过审规模', '柱状图', '考公', json_object(
+      'xKey','label',
+      'series', json_array(json_object('key','people','name','人数（万人）','color','#2563eb')),
+      'insights', json_array('报名规模远高于招录规模，选岗限制条件会显著影响真实竞争。','专业、政治面貌、基层经历、应届身份等字段需要提前核对。'),
+      'rows', json_array(
+        json_object('label','计划招录','people',3.81),
+        json_object('label','资格审查通过','people',371.8)
+      )
+    ), '2026 年度中央机关及其直属机构考试录用公务员计划招录约 3.81 万人，资格审查通过 371.8 万人。', '中国政府网、国家公务员局', 'https://www.gov.cn/lianbo/bumen/202510/content_7036992.htm', '已发布', '公开', '图表中心'),
+  (5, '2026 届就业供需参考', '柱状图', '就业', json_object(
+      'xKey','label',
+      'series', json_array(json_object('key','people','name','规模（万人/万个）','color','#b45309')),
+      'insights', json_array('岗位信息规模不等同于有效 offer，仍需看行业、城市和岗位匹配度。','建议以目标岗位 JD 反推技能证据，而不是只按专业名称投递。'),
+      'rows', json_array(
+        json_object('label','高校毕业生规模','people',1270),
+        json_object('label','金秋启航岗位信息','people',1200)
+      )
+    ), '2026 届高校毕业生预计约 1270 万人；教育部启动金秋启航校园招聘月，汇集发布岗位信息超 1200 万个。', '教育部、央视网（据教育部）', 'https://news.cctv.com/2025/11/20/ARTI0xYbzeyS5Y6Zky3R3VZg251120.shtml', '已发布', '公开', '图表中心'),
+  (6, '考研关键节点时间线', '时间线图', '考研', json_object('rows', json_array(
+      json_object('stage','9-10 月','description','关注研招网公告、招生单位章程、专业目录和网报安排。'),
+      json_object('stage','12 月','description','参加初试，并同步准备复试材料和调剂预案。'),
+      json_object('stage','次年 2-3 月','description','查询初试成绩、复试线与调剂系统开放安排。'),
+      json_object('stage','次年 3-4 月','description','参加复试/调剂，重点跟踪目标院校学院通知。')
+    ), 'insights', json_array('考研不是只看初试分数，复试信息差和调剂速度也会影响结果。')), '按研招网年度网报、初试、复试调剂服务等公开流程整理。', '中国研究生招生信息网', 'https://yz.chsi.com.cn/', '已发布', '公开', '图表中心'),
+  (7, '考公关键节点时间线', '时间线图', '考公', json_object('rows', json_array(
+      json_object('stage','10 月','description','关注国考公告、职位表、报考指南和专业目录匹配。'),
+      json_object('stage','11-12 月','description','参加公共科目笔试，部分岗位还需专业科目。'),
+      json_object('stage','次年 1 月左右','description','查询笔试成绩和首批面试名单。'),
+      json_object('stage','次年 2-4 月','description','准备资格复审、面试、体检和考察。')
+    ), 'insights', json_array('考公时间线固定性强，最容易被低估的是职位表筛选和资格条件核验。')), '按国家公务员局中央机关及其直属机构考试录用公务员专题信息整理。', '国家公务员局', 'http://bm.scs.gov.cn/kl2026', '已发布', '公开', '图表中心'),
+  (8, '就业关键行动时间线', '时间线图', '就业', json_object('rows', json_array(
+      json_object('stage','5-6 月','description','锁定 2-3 类目标岗位，整理项目、实习、竞赛和课程作品证据。'),
+      json_object('stage','7-8 月','description','完成简历、作品集、笔试题库和目标企业清单。'),
+      json_object('stage','9-11 月','description','跟进秋招、专场招聘和宣讲会，记录投递转化率。'),
+      json_object('stage','12 月以后','description','进行 offer 对比、补录关注和毕业去向材料确认。')
+    ), 'insights', json_array('就业准备要用岗位要求倒推能力证据，不能只等招聘信息出现。')), '参考教育部国家大学生就业服务平台与校园招聘专项行动公开信息整理。', '国家大学生就业服务平台', 'https://www.24365.ncss.cn/student/jobs/index.html', '已发布', '公开', '图表中心')
 ON DUPLICATE KEY UPDATE
-  id = VALUES(id);
+  title = VALUES(title),
+  chart_type = VALUES(chart_type),
+  path = VALUES(path),
+  data_json = VALUES(data_json),
+  methodology = VALUES(methodology),
+  source_name = VALUES(source_name),
+  source_url = VALUES(source_url),
+  status = VALUES(status),
+  visibility = VALUES(visibility),
+  display_position = VALUES(display_position);
+
+UPDATE chart_info SET filters_json = JSON_OBJECT() WHERE id BETWEEN 1 AND 8;
 
 INSERT INTO path_page_config
   (path_key, name, intro, suitable_json, timeline_json, pitfalls_json, accent, match_score, sort_order, status)

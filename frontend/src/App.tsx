@@ -44,6 +44,7 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Legend,
   Line,
   LineChart,
   Pie,
@@ -114,6 +115,12 @@ type ChartForm = {
   status: string;
   dataText: string;
   filtersText: string;
+};
+
+type ChartSeries = {
+  key: string;
+  name?: string;
+  color?: string;
 };
 
 type PathForm = {
@@ -589,7 +596,9 @@ function HomeView({ report }: { report: AiReport | null }) {
       });
   }, []);
 
-  const primaryChart = home?.charts.find((chart) => chart.chartType.includes("趋势")) || home?.charts[0];
+  const primaryChart = home?.charts.find((chart) => chart.displayPosition === "首页")
+    || home?.charts.find((chart) => chart.chartType.includes("趋势"))
+    || home?.charts[0];
   const primaryChartRows = Array.isArray(primaryChart?.data?.rows)
     ? primaryChart.data.rows as Array<Record<string, unknown>>
     : [];
@@ -1525,45 +1534,95 @@ function ChartsView({ session }: { session: Session | null }) {
     [chartItems, typeFilter]
   );
 
+  const sourceCount = useMemo(
+    () => new Set(visibleCharts.map((chart) => chart.sourceName).filter(Boolean)).size,
+    [visibleCharts]
+  );
+
+  const latestUpdated = useMemo(() => {
+    const timestamps = visibleCharts
+      .map((chart) => new Date(chart.updatedAt).getTime())
+      .filter((time) => !Number.isNaN(time));
+    if (timestamps.length === 0) return "无记录";
+    return formatAdminTime(new Date(Math.max(...timestamps)).toISOString());
+  }, [visibleCharts]);
+
   function rowsOf(chart: ChartItem) {
     const rows = chart.data?.rows;
     return Array.isArray(rows) ? rows as Array<Record<string, unknown>> : [];
+  }
+
+  function xKeyOf(chart: ChartItem, fallback: string) {
+    return typeof chart.data?.xKey === "string" ? chart.data.xKey : fallback;
+  }
+
+  function chartSeriesOf(chart: ChartItem, fallbackKeys: string[]): ChartSeries[] {
+    const declared = chart.data?.series;
+    if (Array.isArray(declared)) {
+      const series = declared
+        .map((item) => item as Record<string, unknown>)
+        .filter((item) => typeof item.key === "string")
+        .map((item, index) => ({
+          key: String(item.key),
+          name: typeof item.name === "string" ? item.name : String(item.key),
+          color: typeof item.color === "string" ? item.color : chartPalette[index % chartPalette.length]
+        }));
+      if (series.length > 0) return series;
+    }
+    return fallbackKeys.map((key, index) => ({
+      key,
+      name: key,
+      color: pathColor(key) || chartPalette[index % chartPalette.length]
+    }));
+  }
+
+  function chartInsights(chart: ChartItem) {
+    const insights = chart.data?.insights;
+    return Array.isArray(insights)
+      ? insights.map((item) => String(item)).filter(Boolean).slice(0, 4)
+      : [];
   }
 
   function renderChart(chart: ChartItem) {
     const rows = rowsOf(chart);
     if (rows.length === 0) return null;
     if (chart.chartType.includes("趋势")) {
+      const series = chartSeriesOf(chart, ["就业", "考研", "考公"]);
       return (
         <LineChart data={rows} margin={{ top: 12, right: 18, left: -12, bottom: 0 }}>
           <CartesianGrid stroke="#e5e7eb" strokeDasharray="4 4" />
-          <XAxis dataKey="year" />
+          <XAxis dataKey={xKeyOf(chart, "year")} />
           <YAxis />
           <Tooltip />
-          <Line type="monotone" dataKey="就业" stroke="#b45309" strokeWidth={3} />
-          <Line type="monotone" dataKey="考研" stroke="#0f766e" strokeWidth={3} />
-          <Line type="monotone" dataKey="考公" stroke="#2563eb" strokeWidth={3} />
+          <Legend />
+          {series.map((item) => (
+            <Line key={item.key} type="monotone" dataKey={item.key} name={item.name} stroke={item.color} strokeWidth={3} />
+          ))}
         </LineChart>
       );
     }
     if (chart.chartType.includes("柱")) {
+      const series = chartSeriesOf(chart, ["就业", "考研", "考公"]);
       return (
         <BarChart data={rows} margin={{ top: 12, right: 18, left: -12, bottom: 0 }}>
           <CartesianGrid stroke="#e5e7eb" strokeDasharray="4 4" />
-          <XAxis dataKey="label" />
+          <XAxis dataKey={xKeyOf(chart, "label")} />
           <YAxis />
           <Tooltip />
-          <Bar dataKey="就业" fill="#b45309" radius={[4, 4, 0, 0]} />
-          <Bar dataKey="考研" fill="#0f766e" radius={[4, 4, 0, 0]} />
-          <Bar dataKey="考公" fill="#2563eb" radius={[4, 4, 0, 0]} />
+          <Legend />
+          {series.map((item) => (
+            <Bar key={item.key} dataKey={item.key} name={item.name} fill={item.color} radius={[4, 4, 0, 0]} />
+          ))}
         </BarChart>
       );
     }
     if (chart.chartType.includes("环") || chart.chartType.includes("饼")) {
+      const nameKey = typeof chart.data?.nameKey === "string" ? chart.data.nameKey : "path";
+      const valueKey = typeof chart.data?.valueKey === "string" ? chart.data.valueKey : "score";
       const data = rows.map((row) => ({
-        name: String(row.path || row.name || "未命名"),
-        value: Number(row.score || row.value || 0),
-        color: pathColor(String(row.path || row.name || ""))
+        name: String(row[nameKey] || row.name || "未命名"),
+        value: Number(row[valueKey] || row.value || 0),
+        color: pathColor(String(row[nameKey] || row.name || ""))
       }));
       return (
         <PieChart>
@@ -1577,13 +1636,15 @@ function ChartsView({ session }: { session: Session | null }) {
       );
     }
     if (chart.chartType.includes("雷达")) {
+      const series = chartSeriesOf(chart, ["就业", "考研", "考公"]);
       return (
         <RadarChart data={rows}>
           <PolarGrid />
-          <PolarAngleAxis dataKey="subject" />
-          <Radar name="就业" dataKey="就业" stroke="#b45309" fill="#b45309" fillOpacity={0.18} />
-          <Radar name="考研" dataKey="考研" stroke="#0f766e" fill="#0f766e" fillOpacity={0.16} />
-          <Radar name="考公" dataKey="考公" stroke="#2563eb" fill="#2563eb" fillOpacity={0.16} />
+          <PolarAngleAxis dataKey={xKeyOf(chart, "subject")} />
+          {series.map((item) => (
+            <Radar key={item.key} name={item.name} dataKey={item.key} stroke={item.color} fill={item.color} fillOpacity={0.16} />
+          ))}
+          <Legend />
           <Tooltip />
         </RadarChart>
       );
@@ -1619,11 +1680,17 @@ function ChartsView({ session }: { session: Session | null }) {
             <option value="2027">2027</option>
           </select>
         </div>
+        <div className="chart-summary-strip">
+          <span>当前展示 {visibleCharts.length} 张图表</span>
+          <span>覆盖 {sourceCount} 个真实数据源</span>
+          <span>最近更新 {latestUpdated}</span>
+        </div>
       </section>
       <section className="content-grid two">
         {visibleCharts.map((chart) => {
           const rows = rowsOf(chart);
           const chartNode = renderChart(chart);
+          const insights = chartInsights(chart);
           return (
             <div className="surface" key={chart.id}>
               <SectionTitle icon={BarChart3} title={chart.title} />
@@ -1650,7 +1717,18 @@ function ChartsView({ session }: { session: Session | null }) {
                   )}
                 </div>
               )}
-              <p className="source-line">来源：{chart.sourceName}；口径：{chart.methodology}；更新：{chart.updatedAt}。</p>
+              {insights.length > 0 && (
+                <div className="chart-insights">
+                  {insights.map((insight) => <span key={insight}>{insight}</span>)}
+                </div>
+              )}
+              <p className="source-line">
+                来源：
+                {chart.sourceUrl ? (
+                  <a className="source-link" href={chart.sourceUrl} target="_blank" rel="noreferrer">{chart.sourceName}<ExternalLink size={12} /></a>
+                ) : chart.sourceName}
+                ；口径：{chart.methodology}；更新：{formatAdminTime(chart.updatedAt)}。
+              </p>
             </div>
           );
         })}
@@ -3222,6 +3300,8 @@ function reportScoreForPath(report: AiReport | null, pathName: string) {
   const score = report.scores.find((item) => item.path === pathName || item.path.includes(pathName) || pathName.includes(item.path));
   return score?.score ?? null;
 }
+
+const chartPalette = ["#2563eb", "#0f766e", "#b45309", "#7c3aed", "#be123c", "#475569"];
 
 function pathColor(path: string) {
   if (path.includes("考公")) return "#2563eb";

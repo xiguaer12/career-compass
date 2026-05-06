@@ -662,6 +662,21 @@ textarea:focus-visible {
   color: var(--muted);
 }
 
+.chart-summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.chart-summary-strip span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdff;
+  color: #334155;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
 .chart-box {
   width: 100%;
   min-height: 300px;
@@ -669,6 +684,29 @@ textarea:focus-visible {
 
 .chart-box.compact {
   min-height: 220px;
+}
+
+.chart-insights {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.chart-insights span {
+  border-left: 3px solid var(--teal);
+  background: #f8fafc;
+  border-radius: 8px;
+  color: #334155;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.source-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--blue);
+  text-decoration: none;
 }
 
 .notice-list,

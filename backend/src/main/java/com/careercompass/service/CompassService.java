@@ -328,6 +328,9 @@ public class CompassService {
     List<ContentItem> faqs = contents("FAQ").stream().limit(5).toList();
     List<ChartItem> charts = publicCharts(null, null, null, null).stream()
         .filter(chart -> "首页".equals(chart.displayPosition()) || "图表中心".equals(chart.displayPosition()))
+        .sorted(Comparator
+            .comparingInt((ChartItem chart) -> "首页".equals(chart.displayPosition()) ? 0 : 1)
+            .thenComparing(ChartItem::updatedAt, Comparator.reverseOrder()))
         .limit(4)
         .toList();
     List<CommunityPost> featuredPosts = communityPosts(null, null, null, "featured").stream().limit(4).toList();
@@ -2310,45 +2313,83 @@ public class CompassService {
     seedSource(8, "国家大学生就业服务平台专场招聘", "专场招聘会", "https://www.24365.ncss.cn/student/jobfair/index.html", "每日", "就业", "高", "启用");
     seedSource(9, "乐业上海第一站", "上海就业服务与招聘", "https://jobs.rsj.sh.gov.cn/", "每日", "就业", "高", "启用");
     seedSource(10, "上海理工大学就业信息网", "校内招聘与宣讲会", "https://91.usst.edu.cn/", "每日", "就业", "高", "启用");
-    seedChart(1, "历年去向趋势", "趋势图", "全部", Map.of(
+    seedChart(1, "2024-2026 高校毕业生规模", "趋势图", "全部", Map.of(
         "rows", List.of(
-            Map.of("year", "2021", "考公", 18.4, "考研", 36.2, "就业", 45.4),
-            Map.of("year", "2022", "考公", 20.1, "考研", 35.7, "就业", 44.2),
-            Map.of("year", "2023", "考公", 22.8, "考研", 33.4, "就业", 43.8),
-            Map.of("year", "2024", "考公", 24.2, "考研", 32.8, "就业", 43.0),
-            Map.of("year", "2025", "考公", 25.6, "考研", 31.9, "就业", 42.5)
-        )
-    ), "本科毕业去向比例，比例类数据保留 1 位小数", "校内就业质量数据", "公开", "图表中心", "已发布");
-    seedChart(2, "当前样本匹配分布", "环图", "全部", Map.of(
+            Map.of("year", "2024", "graduates", 1179),
+            Map.of("year", "2025", "graduates", 1222),
+            Map.of("year", "2026", "graduates", 1270)
+        ),
+        "xKey", "year",
+        "series", List.of(Map.of("key", "graduates", "name", "高校毕业生规模（万人）", "color", "#b45309")),
+        "insights", List.of("2026 届规模预计约 1270 万人，继续处在高位。", "就业方向需要更早完成岗位画像、实习经历和投递节奏管理。")
+    ), "按教育部公开发布的当届全国普通高校毕业生预计规模统计，单位为万人。", "教育部、央视网（据教育部）", "https://news.cctv.com/2025/11/20/ARTI0xYbzeyS5Y6Zky3R3VZg251120.shtml", "公开", "首页", "已发布");
+    seedChart(2, "2022-2026 研考报名人数变化", "趋势图", "考研", Map.of(
         "rows", List.of(
-            Map.of("path", "就业", "score", 88),
-            Map.of("path", "考公", "score", 82),
-            Map.of("path", "考研", "score", 76)
-        )
-    ), "三路径匹配分 0-100 整数", "问卷输入快照", "公开", "首页", "已发布");
-    seedChart(3, "各学院路径选择样本", "柱状图", "全部", Map.of(
+            Map.of("year", "2022", "applicants", 457),
+            Map.of("year", "2023", "applicants", 474),
+            Map.of("year", "2024", "applicants", 438),
+            Map.of("year", "2025", "applicants", 388),
+            Map.of("year", "2026", "applicants", 343)
+        ),
+        "xKey", "year",
+        "series", List.of(Map.of("key", "applicants", "name", "研考报名人数（万人）", "color", "#0f766e")),
+        "insights", List.of("研考报名人数连续三年回落，不代表目标院校竞争同步下降。", "应结合专业目录、复试线、推免比例与调剂空间判断真实难度。")
+    ), "全国硕士研究生招生考试报名人数，单位为万人；用于观察总体热度，不替代院校专业层面的录取难度分析。", "教育部、央视网（据教育部）", "https://news.cctv.cn/2025/11/24/ARTINT5iuLLp0mtEfdDd7Kkl251124.shtml", "公开", "图表中心", "已发布");
+    seedChart(3, "2024-2026 国考资格审查竞争比", "趋势图", "考公", Map.of(
         "rows", List.of(
-            Map.of("label", "光电信息与计算机工程学院", "就业", 52, "考研", 31, "考公", 17),
-            Map.of("label", "管理学院", "就业", 44, "考研", 26, "考公", 30),
-            Map.of("label", "外语学院", "就业", 49, "考研", 22, "考公", 29)
-        )
-    ), "按学院统计已完成问卷学生主路径分布", "问卷输入快照", "公开", "图表中心", "已发布", Map.of("graduationYear", "2026"));
-    seedChart(4, "三路径能力维度雷达", "雷达图", "全部", Map.of(
+            Map.of("year", "2024", "ratio", 77),
+            Map.of("year", "2025", "ratio", 86),
+            Map.of("year", "2026", "ratio", 98)
+        ),
+        "xKey", "year",
+        "series", List.of(Map.of("key", "ratio", "name", "约每个录用计划对应过审人数", "color", "#2563eb")),
+        "insights", List.of("2026 年国考约 98:1，岗位筛选比单纯刷题更早决定上限。", "考公规划应同时关注国考、省考、事业单位和选调等不同机会窗口。")
+    ), "以官方公布的资格审查通过人数与计划招录人数估算，展示约数竞争比。", "中国政府网、国家公务员局", "https://www.gov.cn/lianbo/bumen/202510/content_7036992.htm", "公开", "图表中心", "已发布");
+    seedChart(4, "2026 国考招录与过审规模", "柱状图", "考公", Map.of(
         "rows", List.of(
-            Map.of("subject", "确定性", "就业", 63, "考研", 68, "考公", 84),
-            Map.of("subject", "成长性", "就业", 82, "考研", 86, "考公", 66),
-            Map.of("subject", "现金流", "就业", 88, "考研", 44, "考公", 58),
-            Map.of("subject", "准备周期", "就业", 64, "考研", 78, "考公", 72)
-        )
-    ), "基于问卷维度归一化到 0-100 分", "问卷输入快照", "公开", "图表中心", "已发布");
-    seedChart(5, "校招准备时间线", "时间线图", "就业", Map.of(
+            Map.of("label", "计划招录", "people", 3.81),
+            Map.of("label", "资格审查通过", "people", 371.8)
+        ),
+        "xKey", "label",
+        "series", List.of(Map.of("key", "people", "name", "人数（万人）", "color", "#2563eb")),
+        "insights", List.of("报名规模远高于招录规模，选岗限制条件会显著影响真实竞争。", "专业、政治面貌、基层经历、应届身份等字段需要提前核对。")
+    ), "2026 年度中央机关及其直属机构考试录用公务员计划招录约 3.81 万人，资格审查通过 371.8 万人。", "中国政府网、国家公务员局", "https://www.gov.cn/lianbo/bumen/202510/content_7036992.htm", "公开", "图表中心", "已发布");
+    seedChart(5, "2026 届就业供需参考", "柱状图", "就业", Map.of(
         "rows", List.of(
-            Map.of("stage", "5-6 月", "description", "整理项目经历、确定岗位方向"),
-            Map.of("stage", "7-8 月", "description", "完善简历与作品材料"),
-            Map.of("stage", "9-10 月", "description", "密集投递并记录面试复盘"),
-            Map.of("stage", "11-12 月", "description", "Offer 对比与签约决策")
-        )
-    ), "按校招常见节奏整理的时间节点", "校内就业服务中心", "公开", "图表中心", "已发布", Map.of("path", "就业"));
+            Map.of("label", "高校毕业生规模", "people", 1270),
+            Map.of("label", "金秋启航岗位信息", "people", 1200)
+        ),
+        "xKey", "label",
+        "series", List.of(Map.of("key", "people", "name", "规模（万人/万个）", "color", "#b45309")),
+        "insights", List.of("岗位信息规模不等同于有效 offer，仍需看行业、城市和岗位匹配度。", "建议以目标岗位 JD 反推技能证据，而不是只按专业名称投递。")
+    ), "2026 届高校毕业生预计约 1270 万人；教育部启动金秋启航校园招聘月，汇集发布岗位信息超 1200 万个。", "教育部、央视网（据教育部）", "https://news.cctv.com/2025/11/20/ARTI0xYbzeyS5Y6Zky3R3VZg251120.shtml", "公开", "图表中心", "已发布");
+    seedChart(6, "考研关键节点时间线", "时间线图", "考研", Map.of(
+        "rows", List.of(
+            Map.of("stage", "9-10 月", "description", "关注研招网公告、招生单位章程、专业目录和网报安排。"),
+            Map.of("stage", "12 月", "description", "参加初试，并同步准备复试材料和调剂预案。"),
+            Map.of("stage", "次年 2-3 月", "description", "查询初试成绩、复试线与调剂系统开放安排。"),
+            Map.of("stage", "次年 3-4 月", "description", "参加复试/调剂，重点跟踪目标院校学院通知。")
+        ),
+        "insights", List.of("考研不是只看初试分数，复试信息差和调剂速度也会影响结果。")
+    ), "按研招网年度网报、初试、复试调剂服务等公开流程整理。", "中国研究生招生信息网", "https://yz.chsi.com.cn/", "公开", "图表中心", "已发布");
+    seedChart(7, "考公关键节点时间线", "时间线图", "考公", Map.of(
+        "rows", List.of(
+            Map.of("stage", "10 月", "description", "关注国考公告、职位表、报考指南和专业目录匹配。"),
+            Map.of("stage", "11-12 月", "description", "参加公共科目笔试，部分岗位还需专业科目。"),
+            Map.of("stage", "次年 1 月左右", "description", "查询笔试成绩和首批面试名单。"),
+            Map.of("stage", "次年 2-4 月", "description", "准备资格复审、面试、体检和考察。")
+        ),
+        "insights", List.of("考公时间线固定性强，最容易被低估的是职位表筛选和资格条件核验。")
+    ), "按国家公务员局中央机关及其直属机构考试录用公务员专题信息整理。", "国家公务员局", "http://bm.scs.gov.cn/kl2026", "公开", "图表中心", "已发布");
+    seedChart(8, "就业关键行动时间线", "时间线图", "就业", Map.of(
+        "rows", List.of(
+            Map.of("stage", "5-6 月", "description", "锁定 2-3 类目标岗位，整理项目、实习、竞赛和课程作品证据。"),
+            Map.of("stage", "7-8 月", "description", "完成简历、作品集、笔试题库和目标企业清单。"),
+            Map.of("stage", "9-11 月", "description", "跟进秋招、专场招聘和宣讲会，记录投递转化率。"),
+            Map.of("stage", "12 月以后", "description", "进行 offer 对比、补录关注和毕业去向材料确认。")
+        ),
+        "insights", List.of("就业准备要用岗位要求倒推能力证据，不能只等招聘信息出现。")
+    ), "参考教育部国家大学生就业服务平台与校园招聘专项行动公开信息整理。", "国家大学生就业服务平台", "https://www.24365.ncss.cn/student/jobs/index.html", "公开", "图表中心", "已发布");
     seedTag("考公", "路径标签", 1);
     seedTag("考研", "路径标签", 2);
     seedTag("就业", "路径标签", 3);
@@ -2485,14 +2526,22 @@ public class CompassService {
   }
 
   private void seedChart(long id, String title, String type, String path, Map<String, Object> data, String methodology, String source, String visibility, String position, String status) {
-    seedChart(id, title, type, path, data, methodology, source, visibility, position, status, Map.of());
+    seedChart(id, title, type, path, data, methodology, source, null, visibility, position, status, Map.of());
   }
 
   private void seedChart(long id, String title, String type, String path, Map<String, Object> data, String methodology, String source, String visibility, String position, String status, Map<String, Object> filters) {
+    seedChart(id, title, type, path, data, methodology, source, null, visibility, position, status, filters);
+  }
+
+  private void seedChart(long id, String title, String type, String path, Map<String, Object> data, String methodology, String source, String sourceUrl, String visibility, String position, String status) {
+    seedChart(id, title, type, path, data, methodology, source, sourceUrl, visibility, position, status, Map.of());
+  }
+
+  private void seedChart(long id, String title, String type, String path, Map<String, Object> data, String methodology, String source, String sourceUrl, String visibility, String position, String status, Map<String, Object> filters) {
     jdbc.update(
         """
-        insert into chart_info (id, title, chart_type, path, data_json, methodology, source_name, filters_json, visibility, display_position, status)
-        values (?, ?, ?, ?, cast(? as json), ?, ?, cast(? as json), ?, ?, ?)
+        insert into chart_info (id, title, chart_type, path, data_json, methodology, source_name, source_url, filters_json, visibility, display_position, status)
+        values (?, ?, ?, ?, cast(? as json), ?, ?, ?, cast(? as json), ?, ?, ?)
         on duplicate key update id = values(id)
         """,
         id,
@@ -2502,6 +2551,7 @@ public class CompassService {
         toJson(data),
         methodology,
         source,
+        sourceUrl,
         toJson(filters == null ? Map.of() : filters),
         visibility,
         position,
