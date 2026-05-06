@@ -733,6 +733,12 @@ textarea:focus-visible {
   min-height: 390px;
 }
 
+.detail-toolbar {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 12px;
+}
+
 .chart-detail-meta {
   display: flex;
   flex-wrap: wrap;

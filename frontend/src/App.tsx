@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArrowLeft,
   BarChart3,
   Bell,
   Bot,
@@ -313,6 +314,7 @@ function App() {
   const [chartToOpen, setChartToOpen] = useState<number | null>(null);
   const [communityPostToOpen, setCommunityPostToOpen] = useState<number | null>(null);
   const [communityDetailOnly, setCommunityDetailOnly] = useState(false);
+  const [selectedPathKey, setSelectedPathKey] = useState("");
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
@@ -437,6 +439,8 @@ function App() {
           <PathsView
             report={report}
             session={session}
+            selectedPathKey={selectedPathKey}
+            onSelectedPathKeyChange={setSelectedPathKey}
             onOpenChart={(chart) => {
               setChartToOpen(chart.id);
               setActiveTab("charts");
@@ -448,7 +452,16 @@ function App() {
             }}
           />
         )}
-        {activeTab === "charts" && <ChartsView session={session} openChartId={chartToOpen} />}
+        {activeTab === "charts" && (
+          <ChartsView
+            session={session}
+            openChartId={chartToOpen}
+            onBackToPaths={chartToOpen ? () => {
+              setChartToOpen(null);
+              setActiveTab("paths");
+            } : undefined}
+          />
+        )}
         {activeTab === "community" && (
           <CommunityView
             session={session}
@@ -457,6 +470,11 @@ function App() {
             openPostId={communityPostToOpen}
             detailOnly={communityDetailOnly}
             onOpenedPost={() => setCommunityPostToOpen(null)}
+            onBackToPaths={communityDetailOnly ? () => {
+              setCommunityPostToOpen(null);
+              setCommunityDetailOnly(false);
+              setActiveTab("paths");
+            } : undefined}
           />
         )}
         {activeTab === "messages" && <MessagesView session={session} onLogin={() => setAuthOpen(true)} setNotice={setNotice} />}
@@ -1412,21 +1430,24 @@ function ReportView({
 function PathsView({
   report,
   session,
+  selectedPathKey,
+  onSelectedPathKeyChange,
   onOpenChart,
   onOpenCommunityPost
 }: {
   report: AiReport | null;
   session: Session | null;
+  selectedPathKey: string;
+  onSelectedPathKeyChange: (key: string) => void;
   onOpenChart: (chart: ChartItem) => void;
   onOpenCommunityPost: (post: CommunityPost) => void;
 }) {
   const [paths, setPaths] = useState<PathInfo[]>([]);
-  const [selectedKey, setSelectedKey] = useState("");
   const [pathPage, setPathPage] = useState<PathPage | null>(null);
   const [pathCharts, setPathCharts] = useState<ChartItem[]>([]);
   const [pathPosts, setPathPosts] = useState<CommunityPost[]>([]);
   const [pathError, setPathError] = useState("");
-  const selected = paths.find((path) => path.key === selectedKey) || paths[0] || null;
+  const selected = paths.find((path) => path.key === selectedPathKey) || paths[0] || null;
   const selectedScore = selected ? reportScoreForPath(report, selected.name) ?? selected.match : 0;
 
   useEffect(() => {
@@ -1434,7 +1455,7 @@ function PathsView({
       .then((pages) => {
         const next = pages.map(pathPageToInfo);
         setPaths(next);
-        if (!selectedKey && next[0]) setSelectedKey(next[0].key);
+        if (!selectedPathKey && next[0]) onSelectedPathKeyChange(next[0].key);
       })
       .catch((exception) => setPathError(exception instanceof Error ? exception.message : "路径配置加载失败"));
   }, []);
@@ -1473,7 +1494,7 @@ function PathsView({
           <button
             key={path.key}
             className={selected.key === path.key ? "active" : ""}
-            onClick={() => setSelectedKey(path.key)}
+            onClick={() => onSelectedPathKeyChange(path.key)}
           >
             {path.name}
           </button>
@@ -1552,7 +1573,15 @@ function PathsView({
   );
 }
 
-function ChartsView({ session, openChartId }: { session: Session | null; openChartId?: number | null }) {
+function ChartsView({
+  session,
+  openChartId,
+  onBackToPaths
+}: {
+  session: Session | null;
+  openChartId?: number | null;
+  onBackToPaths?: () => void;
+}) {
   const [chartItems, setChartItems] = useState<ChartItem[]>([]);
   const [selectedChartId, setSelectedChartId] = useState<number | null>(null);
   const [pathFilter, setPathFilter] = useState("");
@@ -1760,6 +1789,14 @@ function ChartsView({ session, openChartId }: { session: Session | null; openCha
     return (
       <div className="page-stack">
         <section className="surface">
+          {onBackToPaths && (
+            <div className="detail-toolbar">
+              <button className="secondary-button" onClick={onBackToPaths}>
+                <ArrowLeft size={16} />
+                返回三路径
+              </button>
+            </div>
+          )}
           <SectionTitle icon={BarChart3} title="图表详情" />
           {selectedChart ? (
             <div className="chart-detail-meta">
@@ -1838,7 +1875,8 @@ function CommunityView({
   setNotice,
   openPostId,
   detailOnly = false,
-  onOpenedPost
+  onOpenedPost,
+  onBackToPaths
 }: {
   session: Session | null;
   onLogin: () => void;
@@ -1846,6 +1884,7 @@ function CommunityView({
   openPostId?: number | null;
   detailOnly?: boolean;
   onOpenedPost?: () => void;
+  onBackToPaths?: () => void;
 }) {
   const [posts, setPosts] = useState<CommunityPost[]>([]);
   const [title, setTitle] = useState("");
@@ -2077,12 +2116,28 @@ function CommunityView({
       )}
       {detailOnly && !selectedPost && (
         <section className="surface community-detail">
+          {onBackToPaths && (
+            <div className="detail-toolbar">
+              <button className="secondary-button" onClick={onBackToPaths}>
+                <ArrowLeft size={16} />
+                返回三路径
+              </button>
+            </div>
+          )}
           <SectionTitle icon={MessagesSquare} title="内容详情" />
           <div className="empty-state">正在加载内容详情...</div>
         </section>
       )}
       {selectedPost && (
         <section className="surface community-detail">
+          {detailOnly && onBackToPaths && (
+            <div className="detail-toolbar">
+              <button className="secondary-button" onClick={onBackToPaths}>
+                <ArrowLeft size={16} />
+                返回三路径
+              </button>
+            </div>
+          )}
           <SectionTitle icon={MessagesSquare} title="内容详情" />
           <div className="detail-head">
             <div>
