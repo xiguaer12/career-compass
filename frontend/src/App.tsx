@@ -310,7 +310,9 @@ function App() {
   const [authOpen, setAuthOpen] = useState(false);
   const [report, setReport] = useState<AiReport | null>(null);
   const [reportTask, setReportTask] = useState<ReportTask | null>(null);
+  const [chartToOpen, setChartToOpen] = useState<number | null>(null);
   const [communityPostToOpen, setCommunityPostToOpen] = useState<number | null>(null);
+  const [communityDetailOnly, setCommunityDetailOnly] = useState(false);
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
@@ -396,7 +398,14 @@ function App() {
               <button
                 key={item.key}
                 className={activeTab === item.key ? "nav-item active" : "nav-item"}
-                onClick={() => setActiveTab(item.key)}
+                onClick={() => {
+                  if (item.key === "charts") setChartToOpen(null);
+                  if (item.key === "community") {
+                    setCommunityPostToOpen(null);
+                    setCommunityDetailOnly(false);
+                  }
+                  setActiveTab(item.key);
+                }}
                 title={item.label}
               >
                 <Icon size={18} />
@@ -428,19 +437,25 @@ function App() {
           <PathsView
             report={report}
             session={session}
+            onOpenChart={(chart) => {
+              setChartToOpen(chart.id);
+              setActiveTab("charts");
+            }}
             onOpenCommunityPost={(post) => {
               setCommunityPostToOpen(post.id);
+              setCommunityDetailOnly(true);
               setActiveTab("community");
             }}
           />
         )}
-        {activeTab === "charts" && <ChartsView session={session} />}
+        {activeTab === "charts" && <ChartsView session={session} openChartId={chartToOpen} />}
         {activeTab === "community" && (
           <CommunityView
             session={session}
             onLogin={() => setAuthOpen(true)}
             setNotice={setNotice}
             openPostId={communityPostToOpen}
+            detailOnly={communityDetailOnly}
             onOpenedPost={() => setCommunityPostToOpen(null)}
           />
         )}
@@ -1397,10 +1412,12 @@ function ReportView({
 function PathsView({
   report,
   session,
+  onOpenChart,
   onOpenCommunityPost
 }: {
   report: AiReport | null;
   session: Session | null;
+  onOpenChart: (chart: ChartItem) => void;
   onOpenCommunityPost: (post: CommunityPost) => void;
 }) {
   const [paths, setPaths] = useState<PathInfo[]>([]);
@@ -1411,12 +1428,6 @@ function PathsView({
   const [pathError, setPathError] = useState("");
   const selected = paths.find((path) => path.key === selectedKey) || paths[0] || null;
   const selectedScore = selected ? reportScoreForPath(report, selected.name) ?? selected.match : 0;
-
-  function openChartDetail(chart: ChartItem) {
-    if (chart.sourceUrl) {
-      window.open(chart.sourceUrl, "_blank", "noopener,noreferrer");
-    }
-  }
 
   useEffect(() => {
     publicApi.paths()
@@ -1515,9 +1526,9 @@ function PathsView({
                   key={chart.id}
                   role="button"
                   tabIndex={0}
-                  onClick={() => openChartDetail(chart)}
+                  onClick={() => onOpenChart(chart)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") openChartDetail(chart);
+                    if (event.key === "Enter" || event.key === " ") onOpenChart(chart);
                   }}
                 >
                   <div>
@@ -1525,7 +1536,7 @@ function PathsView({
                     <span>{chart.chartType} · {chart.sourceName}</span>
                     <small>{chart.methodology}</small>
                   </div>
-                  <ExternalLink size={16} />
+                  <Search size={16} />
                 </div>
               ))}
               {pathCharts.length === 0 && <div className="empty-state">暂无相关图表</div>}
@@ -1541,13 +1552,27 @@ function PathsView({
   );
 }
 
-function ChartsView({ session }: { session: Session | null }) {
+function ChartsView({ session, openChartId }: { session: Session | null; openChartId?: number | null }) {
   const [chartItems, setChartItems] = useState<ChartItem[]>([]);
+  const [selectedChartId, setSelectedChartId] = useState<number | null>(null);
   const [pathFilter, setPathFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [collegeFilter, setCollegeFilter] = useState("");
   const [majorFilter, setMajorFilter] = useState("");
   const [graduationYearFilter, setGraduationYearFilter] = useState("");
+
+  useEffect(() => {
+    if (!openChartId) {
+      setSelectedChartId(null);
+      return;
+    }
+    setSelectedChartId(openChartId);
+    setPathFilter("");
+    setTypeFilter("");
+    setCollegeFilter("");
+    setMajorFilter("");
+    setGraduationYearFilter("");
+  }, [openChartId]);
 
   useEffect(() => {
     publicApi.charts({
@@ -1565,6 +1590,7 @@ function ChartsView({ session }: { session: Session | null }) {
     () => chartItems.filter((chart) => !typeFilter || chart.chartType === typeFilter),
     [chartItems, typeFilter]
   );
+  const selectedChart = selectedChartId ? chartItems.find((chart) => chart.id === selectedChartId) || null : null;
 
   const sourceCount = useMemo(
     () => new Set(visibleCharts.map((chart) => chart.sourceName).filter(Boolean)).size,
@@ -1684,6 +1710,72 @@ function ChartsView({ session }: { session: Session | null }) {
     return null;
   }
 
+  function renderChartCard(chart: ChartItem, detail = false) {
+    const rows = rowsOf(chart);
+    const chartNode = renderChart(chart);
+    const insights = chartInsights(chart);
+    return (
+      <div className="surface" key={chart.id}>
+        <SectionTitle icon={BarChart3} title={chart.title} />
+        {chart.chartType.includes("时间线") ? (
+          <div className="queue-list timeline-chart">
+            {rows.map((row) => (
+              <div className="queue-item" key={String(row.stage)}>
+                <div>
+                  <strong>{String(row.stage)}</strong>
+                  <span>{String(row.description)}</span>
+                </div>
+              </div>
+            ))}
+            {rows.length === 0 && <div className="empty-state">这张时间线暂无 data.rows。</div>}
+          </div>
+        ) : (
+          <div className={detail ? "chart-box detail-chart-box" : "chart-box"}>
+            {chartNode ? (
+              <ResponsiveContainer width="100%" height={detail ? 420 : 330}>
+                {chartNode}
+              </ResponsiveContainer>
+            ) : (
+              <div className="empty-state">这张图表暂无可渲染数据，请在后台补充 data.rows。</div>
+            )}
+          </div>
+        )}
+        {insights.length > 0 && (
+          <div className="chart-insights">
+            {insights.map((insight) => <span key={insight}>{insight}</span>)}
+          </div>
+        )}
+        <p className="source-line">
+          来源：
+          {chart.sourceUrl ? (
+            <a className="source-link" href={chart.sourceUrl} target="_blank" rel="noreferrer">{chart.sourceName}<ExternalLink size={12} /></a>
+          ) : chart.sourceName}
+          ；口径：{chart.methodology}；更新：{formatAdminTime(chart.updatedAt)}。
+        </p>
+      </div>
+    );
+  }
+
+  if (selectedChartId) {
+    return (
+      <div className="page-stack">
+        <section className="surface">
+          <SectionTitle icon={BarChart3} title="图表详情" />
+          {selectedChart ? (
+            <div className="chart-detail-meta">
+              <span>{selectedChart.chartType}</span>
+              <span>{selectedChart.path}</span>
+              <span>{selectedChart.sourceName}</span>
+            </div>
+          ) : (
+            <div className="empty-state">正在加载图表详情...</div>
+          )}
+        </section>
+        {selectedChart && renderChartCard(selectedChart, true)}
+      </div>
+    );
+  }
+
   return (
     <div className="page-stack">
       <section className="surface">
@@ -1719,51 +1811,7 @@ function ChartsView({ session }: { session: Session | null }) {
         </div>
       </section>
       <section className="content-grid two">
-        {visibleCharts.map((chart) => {
-          const rows = rowsOf(chart);
-          const chartNode = renderChart(chart);
-          const insights = chartInsights(chart);
-          return (
-            <div className="surface" key={chart.id}>
-              <SectionTitle icon={BarChart3} title={chart.title} />
-              {chart.chartType.includes("时间线") ? (
-                <div className="queue-list timeline-chart">
-                  {rows.map((row) => (
-                    <div className="queue-item" key={String(row.stage)}>
-                      <div>
-                        <strong>{String(row.stage)}</strong>
-                        <span>{String(row.description)}</span>
-                      </div>
-                    </div>
-                  ))}
-                  {rows.length === 0 && <div className="empty-state">这张时间线暂无 data.rows。</div>}
-                </div>
-              ) : (
-                <div className="chart-box">
-                  {chartNode ? (
-                    <ResponsiveContainer width="100%" height={330}>
-                      {chartNode}
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="empty-state">这张图表暂无可渲染数据，请在后台补充 data.rows。</div>
-                  )}
-                </div>
-              )}
-              {insights.length > 0 && (
-                <div className="chart-insights">
-                  {insights.map((insight) => <span key={insight}>{insight}</span>)}
-                </div>
-              )}
-              <p className="source-line">
-                来源：
-                {chart.sourceUrl ? (
-                  <a className="source-link" href={chart.sourceUrl} target="_blank" rel="noreferrer">{chart.sourceName}<ExternalLink size={12} /></a>
-                ) : chart.sourceName}
-                ；口径：{chart.methodology}；更新：{formatAdminTime(chart.updatedAt)}。
-              </p>
-            </div>
-          );
-        })}
+        {visibleCharts.map((chart) => renderChartCard(chart))}
       </section>
       <section className="surface">
         <SectionTitle icon={Database} title="已发布图表配置" />
@@ -1789,12 +1837,14 @@ function CommunityView({
   onLogin,
   setNotice,
   openPostId,
+  detailOnly = false,
   onOpenedPost
 }: {
   session: Session | null;
   onLogin: () => void;
   setNotice: (message: string) => void;
   openPostId?: number | null;
+  detailOnly?: boolean;
   onOpenedPost?: () => void;
 }) {
   const [posts, setPosts] = useState<CommunityPost[]>([]);
@@ -1976,51 +2026,61 @@ function CommunityView({
 
   return (
     <div className="page-stack">
-      <section className="surface composer">
-        <SectionTitle icon={Plus} title="发布帖子或提问" />
-        <div className="filter-row">
-          <select value={path} onChange={(event) => setPath(event.target.value)}>
-            <option value="">全部路径</option>
-            <option value="就业">就业</option>
-            <option value="考公">考公</option>
-            <option value="考研">考研</option>
-          </select>
-          <select value={type} onChange={(event) => setType(event.target.value)}>
-            <option value="">全部类型</option>
-            <option value="经验帖">经验帖</option>
-            <option value="问答">问答</option>
-          </select>
-          <select value={sort} onChange={(event) => setSort(event.target.value)}>
-            <option value="latest">最新</option>
-            <option value="hot">热度</option>
-            <option value="featured">精选</option>
-          </select>
-          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索标题或正文" />
-        </div>
-        <div className="composer-row">
-          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="输入标题，发布后进入审核流程" />
-          <input value={body} onChange={(event) => setBody(event.target.value)} placeholder="输入正文，至少 10 个字符" />
-          <button className="primary-button" onClick={addPost}>
-            <Plus size={17} />
-            {session ? "发布" : "登录后发布"}
-          </button>
-        </div>
-        {error && <p className="form-error">{error}</p>}
-      </section>
-      <section className="surface">
-        <SectionTitle icon={MessagesSquare} title="社区内容" />
-        <PostList
-          posts={posts}
-          interactive
-          manageableIds={ownPostIds}
-          onOpen={openPost}
-          onLike={(id) => interact(id, "like")}
-          onFavorite={(id) => interact(id, "favorite")}
-          onReport={report}
-          onEdit={beginEdit}
-          onDelete={deletePost}
-        />
-      </section>
+      {!detailOnly && (
+        <>
+          <section className="surface composer">
+            <SectionTitle icon={Plus} title="发布帖子或提问" />
+            <div className="filter-row">
+              <select value={path} onChange={(event) => setPath(event.target.value)}>
+                <option value="">全部路径</option>
+                <option value="就业">就业</option>
+                <option value="考公">考公</option>
+                <option value="考研">考研</option>
+              </select>
+              <select value={type} onChange={(event) => setType(event.target.value)}>
+                <option value="">全部类型</option>
+                <option value="经验帖">经验帖</option>
+                <option value="问答">问答</option>
+              </select>
+              <select value={sort} onChange={(event) => setSort(event.target.value)}>
+                <option value="latest">最新</option>
+                <option value="hot">热度</option>
+                <option value="featured">精选</option>
+              </select>
+              <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索标题或正文" />
+            </div>
+            <div className="composer-row">
+              <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="输入标题，发布后进入审核流程" />
+              <input value={body} onChange={(event) => setBody(event.target.value)} placeholder="输入正文，至少 10 个字符" />
+              <button className="primary-button" onClick={addPost}>
+                <Plus size={17} />
+                {session ? "发布" : "登录后发布"}
+              </button>
+            </div>
+            {error && <p className="form-error">{error}</p>}
+          </section>
+          <section className="surface">
+            <SectionTitle icon={MessagesSquare} title="社区内容" />
+            <PostList
+              posts={posts}
+              interactive
+              manageableIds={ownPostIds}
+              onOpen={openPost}
+              onLike={(id) => interact(id, "like")}
+              onFavorite={(id) => interact(id, "favorite")}
+              onReport={report}
+              onEdit={beginEdit}
+              onDelete={deletePost}
+            />
+          </section>
+        </>
+      )}
+      {detailOnly && !selectedPost && (
+        <section className="surface community-detail">
+          <SectionTitle icon={MessagesSquare} title="内容详情" />
+          <div className="empty-state">正在加载内容详情...</div>
+        </section>
+      )}
       {selectedPost && (
         <section className="surface community-detail">
           <SectionTitle icon={MessagesSquare} title="内容详情" />
