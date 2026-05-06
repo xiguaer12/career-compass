@@ -310,6 +310,7 @@ function App() {
   const [authOpen, setAuthOpen] = useState(false);
   const [report, setReport] = useState<AiReport | null>(null);
   const [reportTask, setReportTask] = useState<ReportTask | null>(null);
+  const [communityPostToOpen, setCommunityPostToOpen] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
@@ -423,9 +424,26 @@ function App() {
         {activeTab === "home" && <HomeView report={report} />}
         {activeTab === "workspace" && <WorkspaceView session={session} onLogin={() => setAuthOpen(true)} onReport={setReport} onTask={updateReportTask} setNotice={setNotice} />}
         {activeTab === "report" && <ReportView report={report} task={reportTask} session={session} onLogin={() => setAuthOpen(true)} onReport={setReport} onTask={updateReportTask} />}
-        {activeTab === "paths" && <PathsView report={report} session={session} />}
+        {activeTab === "paths" && (
+          <PathsView
+            report={report}
+            session={session}
+            onOpenCommunityPost={(post) => {
+              setCommunityPostToOpen(post.id);
+              setActiveTab("community");
+            }}
+          />
+        )}
         {activeTab === "charts" && <ChartsView session={session} />}
-        {activeTab === "community" && <CommunityView session={session} onLogin={() => setAuthOpen(true)} setNotice={setNotice} />}
+        {activeTab === "community" && (
+          <CommunityView
+            session={session}
+            onLogin={() => setAuthOpen(true)}
+            setNotice={setNotice}
+            openPostId={communityPostToOpen}
+            onOpenedPost={() => setCommunityPostToOpen(null)}
+          />
+        )}
         {activeTab === "messages" && <MessagesView session={session} onLogin={() => setAuthOpen(true)} setNotice={setNotice} />}
         {activeTab === "me" && <MeView session={session} onLogin={() => setAuthOpen(true)} setNotice={setNotice} onLogout={() => {
           logout();
@@ -1378,10 +1396,12 @@ function ReportView({
 
 function PathsView({
   report,
-  session
+  session,
+  onOpenCommunityPost
 }: {
   report: AiReport | null;
   session: Session | null;
+  onOpenCommunityPost: (post: CommunityPost) => void;
 }) {
   const [paths, setPaths] = useState<PathInfo[]>([]);
   const [selectedKey, setSelectedKey] = useState("");
@@ -1391,6 +1411,12 @@ function PathsView({
   const [pathError, setPathError] = useState("");
   const selected = paths.find((path) => path.key === selectedKey) || paths[0] || null;
   const selectedScore = selected ? reportScoreForPath(report, selected.name) ?? selected.match : 0;
+
+  function openChartDetail(chart: ChartItem) {
+    if (chart.sourceUrl) {
+      window.open(chart.sourceUrl, "_blank", "noopener,noreferrer");
+    }
+  }
 
   useEffect(() => {
     publicApi.paths()
@@ -1484,13 +1510,22 @@ function PathsView({
             <SectionTitle icon={BarChart3} title="相关图表" />
             <div className="queue-list">
               {pathCharts.slice(0, 5).map((chart) => (
-                <div className="queue-item" key={chart.id}>
+                <div
+                  className="queue-item clickable-row"
+                  key={chart.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openChartDetail(chart)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") openChartDetail(chart);
+                  }}
+                >
                   <div>
                     <strong>{chart.title}</strong>
                     <span>{chart.chartType} · {chart.sourceName}</span>
                     <small>{chart.methodology}</small>
                   </div>
-                  <StatusPill status={chart.status} />
+                  <ExternalLink size={16} />
                 </div>
               ))}
               {pathCharts.length === 0 && <div className="empty-state">暂无相关图表</div>}
@@ -1498,7 +1533,7 @@ function PathsView({
           </div>
           <div className="surface">
             <SectionTitle icon={MessagesSquare} title="路径经验与问答" />
-            <PostList posts={pathPosts.slice(0, 3)} />
+            <PostList posts={pathPosts.slice(0, 3)} onOpen={onOpenCommunityPost} showActions={false} clickable />
           </div>
         </aside>
       </section>
@@ -1749,7 +1784,19 @@ function ChartsView({ session }: { session: Session | null }) {
   );
 }
 
-function CommunityView({ session, onLogin, setNotice }: { session: Session | null; onLogin: () => void; setNotice: (message: string) => void }) {
+function CommunityView({
+  session,
+  onLogin,
+  setNotice,
+  openPostId,
+  onOpenedPost
+}: {
+  session: Session | null;
+  onLogin: () => void;
+  setNotice: (message: string) => void;
+  openPostId?: number | null;
+  onOpenedPost?: () => void;
+}) {
   const [posts, setPosts] = useState<CommunityPost[]>([]);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -1780,6 +1827,11 @@ function CommunityView({ session, onLogin, setNotice }: { session: Session | nul
     refreshOwnPosts(session.token).catch(() => undefined);
   }, [session?.token]);
 
+  useEffect(() => {
+    if (!openPostId) return;
+    openPostById(openPostId).finally(() => onOpenedPost?.());
+  }, [openPostId]);
+
   async function refreshOwnPosts(token = session?.token) {
     if (!token) return;
     const next = await api<Record<string, CommunityPost[]>>("/api/user/community", {}, token);
@@ -1787,11 +1839,15 @@ function CommunityView({ session, onLogin, setNotice }: { session: Session | nul
   }
 
   async function openPost(post: CommunityPost) {
-    const detail = await communityApi.detail(post.id);
+    await openPostById(post.id, post.title);
+  }
+
+  async function openPostById(postId: number, fallbackTitle = "社区内容") {
+    const detail = await communityApi.detail(postId);
     setSelectedPost(detail);
-    setComments(await communityApi.comments(post.id));
+    setComments(await communityApi.comments(postId));
     if (session?.token) {
-      studentApi.recordActivity(session.token, "post", String(post.id), post.title, `/community/${post.id}`).catch(() => undefined);
+      studentApi.recordActivity(session.token, "post", String(postId), detail.title || fallbackTitle, `/community/${postId}`).catch(() => undefined);
     }
   }
 
@@ -3163,6 +3219,8 @@ function PostList({
   interactive = false,
   manageable = false,
   manageableIds,
+  showActions = true,
+  clickable = false,
   onOpen,
   onLike,
   onFavorite,
@@ -3174,6 +3232,8 @@ function PostList({
   interactive?: boolean;
   manageable?: boolean;
   manageableIds?: Set<number>;
+  showActions?: boolean;
+  clickable?: boolean;
   onOpen?: (post: CommunityPost) => void;
   onLike?: (id: number) => void;
   onFavorite?: (id: number) => void;
@@ -3186,8 +3246,18 @@ function PostList({
       {posts.length === 0 && <div className="empty-state">暂无内容</div>}
       {posts.map((post) => {
         const canManage = manageable || Boolean(manageableIds?.has(post.id));
+        const clickablePost = clickable && Boolean(onOpen);
         return (
-          <article className="post-item" key={post.id}>
+          <article
+            className={clickablePost ? "post-item clickable-row" : "post-item"}
+            key={post.id}
+            role={clickablePost ? "button" : undefined}
+            tabIndex={clickablePost ? 0 : undefined}
+            onClick={clickablePost ? () => onOpen?.(post) : undefined}
+            onKeyDown={clickablePost ? (event) => {
+              if (event.key === "Enter" || event.key === " ") onOpen?.(post);
+            } : undefined}
+          >
             <div className="post-main">
               <div className="post-meta">
                 <span>{post.type}</span>
@@ -3198,7 +3268,8 @@ function PostList({
               <p>{post.summary || post.body}</p>
               <small>{post.author || post.authorDisplay || "匿名用户"} · {post.createdAt}</small>
             </div>
-            <div className="post-actions">
+            {showActions && (
+              <div className="post-actions">
               {onOpen && (
                 <button className="icon-button" title="查看详情" onClick={() => onOpen(post)}>
                   <Search size={16} />
@@ -3227,7 +3298,8 @@ function PostList({
                   <Trash2 size={16} />
                 </button>
               )}
-            </div>
+              </div>
+            )}
           </article>
         );
       })}

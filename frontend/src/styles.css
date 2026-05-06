@@ -953,6 +953,18 @@ textarea {
   line-height: 1.6;
 }
 
+.clickable-row {
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, transform 0.16s ease;
+}
+
+.clickable-row:hover,
+.clickable-row:focus-visible {
+  border-color: rgba(37, 99, 235, 0.42);
+  background: #f8fbff;
+  transform: translateY(-1px);
+}
+
 .compact-form {
   margin-top: 16px;
 }
