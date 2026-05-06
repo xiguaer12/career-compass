@@ -434,6 +434,7 @@ textarea:focus-visible {
 
 .hero-panel,
 .surface,
+.path-focus-bar,
 .path-detail,
 .disclaimer {
   background: rgba(255, 255, 255, 0.92);
@@ -595,10 +596,50 @@ textarea:focus-visible {
 }
 
 .surface,
-.path-detail {
+.path-detail,
+.path-focus-bar {
   border-radius: 8px;
   padding: 20px;
   min-width: 0;
+}
+
+.path-focus-bar {
+  border-left: 5px solid;
+  padding: 16px 20px;
+}
+
+.path-focus-bar .path-heading {
+  margin-bottom: 0;
+}
+
+.path-template-spotlight {
+  border-top: 4px solid var(--blue);
+}
+
+.path-news-layout {
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.75fr);
+  align-items: start;
+}
+
+.path-side-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.path-news-main .queue-list {
+  gap: 14px;
+}
+
+.path-news-item {
+  align-items: flex-start;
+}
+
+.path-news-item strong {
+  font-size: 17px;
+}
+
+.path-news-item p {
+  font-size: 14px;
 }
 
 .section-title {
@@ -1293,7 +1334,8 @@ th {
 
   .hero-panel,
   .content-grid.two,
-  .content-grid.split {
+  .content-grid.split,
+  .path-news-layout {
     grid-template-columns: 1fr;
   }
 }
@@ -1360,6 +1402,7 @@ th {
   .metric-grid,
   .content-grid.two,
   .content-grid.three,
+  .path-news-layout,
   .form-grid,
   .plan-grid,
   .config-grid,

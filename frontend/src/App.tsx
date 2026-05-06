@@ -1442,33 +1442,31 @@ function PathsView({
           </button>
         ))}
       </section>
-      <section className="path-detail" style={{ borderTopColor: selected.accent }}>
+      <section className="path-focus-bar" style={{ borderLeftColor: selected.accent }}>
         <div className="path-heading">
           <div>
-            <p className="eyebrow">路线专题页</p>
+            <p className="eyebrow">当前路线</p>
             <h2>{selected.name}</h2>
-            <span>{pathPage?.intro || selected.subtitle}</span>
           </div>
           <div className="match-badge" style={{ color: selected.accent }}>
             {selectedScore}
             <small>{report ? "报告评分" : "匹配度"}</small>
           </div>
         </div>
-        <div className="content-grid three">
-          <InfoList title="适合人群" items={pathPage?.suitable || selected.suitable} />
-          <InfoList title="准备时间线" items={pathPage?.timeline || selected.timeline} />
-          <InfoList title="常见误区" items={pathPage?.pitfalls || selected.pitfalls} />
-        </div>
       </section>
-      <section className="content-grid two">
-        <div className="surface">
-          <SectionTitle icon={FileText} title="最新审核资讯" />
+      <section className="surface path-template-spotlight">
+        <SectionTitle icon={Download} title={`${selected.name}路线资料模板`} />
+        <ResourceTable filter={selected.name} />
+      </section>
+      <section className="content-grid path-news-layout">
+        <div className="surface path-news-main">
+          <SectionTitle icon={FileText} title={`${selected.name}最新审核资讯`} />
           <div className="queue-list">
-            {(pathPage?.highlights || []).slice(0, 5).map((item) => (
-              <div className="queue-item" key={item.id}>
+            {(pathPage?.highlights || []).slice(0, 12).map((item) => (
+              <div className="queue-item path-news-item" key={item.id}>
                 <div>
                   <strong>{item.title}</strong>
-                  <span>{item.source || "公开来源"} · {item.updatedAt}</span>
+                  <span>{item.source || "公开来源"} · 更新 {formatAdminTime(item.updatedAt)}</span>
                   <p>{item.summary}</p>
                 </div>
                 {item.sourceUrl && (
@@ -1481,29 +1479,28 @@ function PathsView({
             {(!pathPage?.highlights || pathPage.highlights.length === 0) && <div className="empty-state">暂无审核资讯</div>}
           </div>
         </div>
-        <div className="surface">
-          <SectionTitle icon={BarChart3} title="相关图表" />
-          <div className="queue-list">
-            {pathCharts.map((chart) => (
-              <div className="queue-item" key={chart.id}>
-                <div>
-                  <strong>{chart.title}</strong>
-                  <span>{chart.chartType} · {chart.methodology}</span>
+        <aside className="path-side-stack">
+          <div className="surface">
+            <SectionTitle icon={BarChart3} title="相关图表" />
+            <div className="queue-list">
+              {pathCharts.slice(0, 5).map((chart) => (
+                <div className="queue-item" key={chart.id}>
+                  <div>
+                    <strong>{chart.title}</strong>
+                    <span>{chart.chartType} · {chart.sourceName}</span>
+                    <small>{chart.methodology}</small>
+                  </div>
+                  <StatusPill status={chart.status} />
                 </div>
-                <StatusPill status={chart.status} />
-              </div>
-            ))}
-            {pathCharts.length === 0 && <div className="empty-state">暂无相关图表</div>}
+              ))}
+              {pathCharts.length === 0 && <div className="empty-state">暂无相关图表</div>}
+            </div>
           </div>
-        </div>
-        <div className="surface">
-          <SectionTitle icon={MessagesSquare} title="路径经验与问答" />
-          <PostList posts={pathPosts.slice(0, 4)} />
-        </div>
-      </section>
-      <section className="surface">
-        <SectionTitle icon={Download} title="路线资料模板" />
-        <ResourceTable filter={selected.name} />
+          <div className="surface">
+            <SectionTitle icon={MessagesSquare} title="路径经验与问答" />
+            <PostList posts={pathPosts.slice(0, 3)} />
+          </div>
+        </aside>
       </section>
     </div>
   );
