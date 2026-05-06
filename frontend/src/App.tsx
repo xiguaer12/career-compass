@@ -3255,16 +3255,21 @@ function ResourceTable({ filter }: { filter?: string }) {
               <td>{resource.format}</td>
               <td>{resource.updatedAt}</td>
               <td>
-                <button
-                  className="icon-button"
-                  title="下载"
-                  disabled={!resource.url}
-                  onClick={() => {
-                    if (resource.url) window.open(resource.url, "_blank", "noopener,noreferrer");
-                  }}
-                >
-                  <Download size={16} />
-                </button>
+                {resource.url ? (
+                  <a
+                    className="icon-button"
+                    title={`下载${resource.name}`}
+                    href={resource.url}
+                    download
+                    aria-label={`下载${resource.name}`}
+                  >
+                    <Download size={16} />
+                  </a>
+                ) : (
+                  <button className="icon-button" title="暂无下载文件" disabled>
+                    <Download size={16} />
+                  </button>
+                )}
               </td>
             </tr>
           ))}

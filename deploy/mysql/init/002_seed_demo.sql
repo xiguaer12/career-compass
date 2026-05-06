@@ -147,10 +147,15 @@ ON DUPLICATE KEY UPDATE
 
 INSERT INTO template_resource (name, category, file_format, file_url, status)
 VALUES
-  ('通用校招简历模板', '就业', 'DOCX', '/static/templates/resume.docx', '已发布'),
-  ('考公报名信息整理表', '考公', 'XLSX', '/static/templates/civil-exam.xlsx', '已发布'),
-  ('复试个人陈述模板', '考研', 'DOCX', '/static/templates/postgraduate.docx', '已发布'),
-  ('面试复盘记录表', '就业', 'PDF', '/static/templates/interview.pdf', '已发布')
+  ('通用校招简历模板', '就业', 'DOCX', '/templates/employment-resume-template.docx', '已发布'),
+  ('考公报名信息整理表', '考公', 'XLSX', '/templates/civil-position-screening.xlsx', '已发布'),
+  ('复试个人陈述模板', '考研', 'DOCX', '/templates/postgraduate-personal-statement.docx', '已发布'),
+  ('面试复盘记录表', '就业', 'DOCX', '/templates/employment-interview-review.docx', '已发布'),
+  ('校招投递跟踪表', '就业', 'XLSX', '/templates/employment-application-tracker.xlsx', '已发布'),
+  ('考公备考周计划模板', '考公', 'DOCX', '/templates/civil-study-plan.docx', '已发布'),
+  ('考公报名材料核对清单', '考公', 'DOCX', '/templates/civil-application-checklist.docx', '已发布'),
+  ('考研院校专业对比表', '考研', 'XLSX', '/templates/postgraduate-school-comparison.xlsx', '已发布'),
+  ('复试材料核对清单', '考研', 'DOCX', '/templates/postgraduate-retest-materials.docx', '已发布')
 ON DUPLICATE KEY UPDATE
   file_format = VALUES(file_format),
   file_url = VALUES(file_url),

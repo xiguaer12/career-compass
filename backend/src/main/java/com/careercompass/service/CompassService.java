@@ -2528,10 +2528,15 @@ public class CompassService {
     seedContent(11, "专场招聘会比泛岗位列表更适合抓批次", "就业", "24365 专场招聘会页面适合发现集中招聘窗口。学生可以按行业、地区和主题建立投递日历，记录报名入口、参会企业、岗位面向专业和截止时间，避免错过秋招、春招或专项招聘批次。", "国家大学生就业服务平台", "https://www.24365.ncss.cn/student/jobfair/index.html");
     seedContent(12, "留沪就业要同时看公共服务和校内宣讲", "就业", "乐业上海和学校就业信息网适合核对上海本地招聘活动、政策服务、宣讲会和校内双选会。准备留沪的学生应把本地公共就业服务、校内宣讲和企业网申入口放在同一张投递表里管理。", "乐业上海 / 上海理工大学就业信息网", "https://jobs.rsj.sh.gov.cn/");
     retireGenericPathContent();
-    seedTemplate(1, "通用校招简历模板", "就业", "DOCX", "/static/templates/resume.docx");
-    seedTemplate(2, "考公报名信息整理表", "考公", "XLSX", "/static/templates/civil-exam.xlsx");
-    seedTemplate(3, "复试个人陈述模板", "考研", "DOCX", "/static/templates/postgraduate.docx");
-    seedTemplate(4, "面试复盘记录表", "就业", "PDF", "/static/templates/interview.pdf");
+    seedTemplate(1, "通用校招简历模板", "就业", "DOCX", "/templates/employment-resume-template.docx");
+    seedTemplate(2, "考公报名信息整理表", "考公", "XLSX", "/templates/civil-position-screening.xlsx");
+    seedTemplate(3, "复试个人陈述模板", "考研", "DOCX", "/templates/postgraduate-personal-statement.docx");
+    seedTemplate(4, "面试复盘记录表", "就业", "DOCX", "/templates/employment-interview-review.docx");
+    seedTemplate(5, "校招投递跟踪表", "就业", "XLSX", "/templates/employment-application-tracker.xlsx");
+    seedTemplate(6, "考公备考周计划模板", "考公", "DOCX", "/templates/civil-study-plan.docx");
+    seedTemplate(7, "考公报名材料核对清单", "考公", "DOCX", "/templates/civil-application-checklist.docx");
+    seedTemplate(8, "考研院校专业对比表", "考研", "XLSX", "/templates/postgraduate-school-comparison.xlsx");
+    seedTemplate(9, "复试材料核对清单", "考研", "DOCX", "/templates/postgraduate-retest-materials.docx");
     seedPathConfig(
         "civil-exam",
         "考公",
