@@ -24,6 +24,11 @@ docker compose up --build
 - MySQL 端口：`3306`
 - 后台接口需要请求头：`X-Admin-Token: change-me-admin-token`
 
+自动更新默认开启：
+
+- 三路径资讯：后端启动 5 分钟后开始检查数据源，每 60 分钟调度一次；具体源按后台配置的“每日/每周/每月”等频率抓取，结果进入后台候选审核后再展示。
+- 图表数据：后端启动 10 分钟后开始刷新官方图表数据，每 720 分钟刷新一次；可通过 `.env` 中的 `CHART_AUTO_REFRESH_*` 配置调整。
+
 ## 本地开发
 
 只有在不通过 Docker、单独调试前端时，才需要启动 Vite 开发服务器：
@@ -51,6 +56,7 @@ npm run dev
 - `GET /admin/dashboard`
 - `GET /admin/sources`
 - `POST /admin/sources/{id}/crawl`
+- `POST /admin/charts/refresh`
 
 ## 需求覆盖
 
@@ -71,3 +77,5 @@ npm run dev
 - 社区发帖会写入 `community_post`，默认进入 `待审核`。
 - 评论、举报、后台帖子状态更新、用户状态更新、抓取候选任务会写入对应表。
 - 后台仪表盘从数据库实时统计注册量、问卷完成率、报告量和待审核量。
+- 三路径资讯支持按数据源频率自动抓取，抓取结果由后台审核后发布。
+- 图表中心支持可信官方来源定期刷新，并保留来源链接、统计口径和更新时间。

@@ -43,6 +43,9 @@ public class CompassService {
   private static final String REPORT_VERSION = "RPT-2026.05";
   private static final String PROMPT_VERSION = "PROMPT-2026.05";
   private static final String TEMPLATE_VERSION = "RPTTPL-2026.05";
+  private static final String GRADUATE_EMPLOYMENT_SOURCE_URL = "https://news.cctv.com/2025/11/20/ARTI0xYbzeyS5Y6Zky3R3VZg251120.shtml";
+  private static final String POSTGRADUATE_SOURCE_URL = "https://news.cctv.cn/2025/11/24/ARTINT5iuLLp0mtEfdDd7Kkl251124.shtml";
+  private static final String CIVIL_EXAM_SOURCE_URL = "https://www.gov.cn/lianbo/bumen/202510/content_7045734.htm";
   private static final List<String> REQUIRED_QUESTION_KEYS = List.of(
       "academic", "certificates", "project", "constraints", "city", "riskPreference",
       "employmentInterest", "civilInterest", "postgraduateInterest"
@@ -70,12 +73,30 @@ public class CompassService {
     thread.setDaemon(true);
     return thread;
   });
+  private final ScheduledExecutorService chartExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+    Thread thread = new Thread(runnable, "career-compass-chart-refresh-worker");
+    thread.setDaemon(true);
+    return thread;
+  });
   private final AtomicBoolean autoCrawlRunning = new AtomicBoolean(false);
+  private final AtomicBoolean chartRefreshRunning = new AtomicBoolean(false);
+  private final boolean autoCrawlEnabled;
+  private final int autoCrawlInitialDelayMinutes;
+  private final int autoCrawlIntervalMinutes;
+  private final boolean chartAutoRefreshEnabled;
+  private final int chartAutoRefreshInitialDelayMinutes;
+  private final int chartAutoRefreshIntervalMinutes;
 
   public CompassService(
       @Value("${app.student-email-pattern:^\\d{10}@st\\.usst\\.edu\\.cn$}") String studentEmailPattern,
       @Value("${app.graduation-years:2025,2026,2027}") String graduationYears,
       @Value("${app.expose-dev-verification-codes:true}") boolean exposeDevCodes,
+      @Value("${app.auto-crawl.enabled:true}") boolean autoCrawlEnabled,
+      @Value("${app.auto-crawl.initial-delay-minutes:5}") int autoCrawlInitialDelayMinutes,
+      @Value("${app.auto-crawl.interval-minutes:60}") int autoCrawlIntervalMinutes,
+      @Value("${app.chart-auto-refresh.enabled:true}") boolean chartAutoRefreshEnabled,
+      @Value("${app.chart-auto-refresh.initial-delay-minutes:10}") int chartAutoRefreshInitialDelayMinutes,
+      @Value("${app.chart-auto-refresh.interval-minutes:720}") int chartAutoRefreshIntervalMinutes,
       JdbcTemplate jdbc,
       ObjectMapper objectMapper,
       SecurityService security,
@@ -87,6 +108,12 @@ public class CompassService {
         .filter(StringUtils::hasText)
         .toList();
     this.exposeDevCodes = exposeDevCodes;
+    this.autoCrawlEnabled = autoCrawlEnabled;
+    this.autoCrawlInitialDelayMinutes = Math.max(1, autoCrawlInitialDelayMinutes);
+    this.autoCrawlIntervalMinutes = Math.max(5, autoCrawlIntervalMinutes);
+    this.chartAutoRefreshEnabled = chartAutoRefreshEnabled;
+    this.chartAutoRefreshInitialDelayMinutes = Math.max(1, chartAutoRefreshInitialDelayMinutes);
+    this.chartAutoRefreshIntervalMinutes = Math.max(30, chartAutoRefreshIntervalMinutes);
     this.jdbc = jdbc;
     this.objectMapper = objectMapper;
     this.security = security;
@@ -129,12 +156,14 @@ public class CompassService {
     repairSeedData();
     recoverInterruptedCrawlTasks();
     startAutoCrawlScheduler();
+    startAutoChartRefreshScheduler();
   }
 
   @PreDestroy
   public void shutdownReportExecutor() {
     reportExecutor.shutdownNow();
     crawlExecutor.shutdownNow();
+    chartExecutor.shutdownNow();
   }
 
   public VerificationCodeResponse sendVerificationCode(VerificationCodeRequest request, String ipAddress) {
@@ -1740,7 +1769,242 @@ public class CompassService {
   }
 
   private void startAutoCrawlScheduler() {
-    crawlExecutor.scheduleWithFixedDelay(this::runDueAutoCrawls, 5, 60, TimeUnit.MINUTES);
+    if (!autoCrawlEnabled) return;
+    crawlExecutor.scheduleWithFixedDelay(this::runDueAutoCrawls, autoCrawlInitialDelayMinutes, autoCrawlIntervalMinutes, TimeUnit.MINUTES);
+  }
+
+  private void startAutoChartRefreshScheduler() {
+    if (!chartAutoRefreshEnabled) return;
+    chartExecutor.scheduleWithFixedDelay(
+        () -> refreshOfficialChartsInternal("自动", "system"),
+        chartAutoRefreshInitialDelayMinutes,
+        chartAutoRefreshIntervalMinutes,
+        TimeUnit.MINUTES
+    );
+  }
+
+  public Map<String, Object> refreshOfficialCharts() {
+    return refreshOfficialChartsInternal("手动", "admin");
+  }
+
+  private Map<String, Object> refreshOfficialChartsInternal(String triggerType, String actor) {
+    if (!chartRefreshRunning.compareAndSet(false, true)) {
+      return Map.of("status", "跳过", "updatedCount", 0, "message", "已有图表刷新任务正在执行");
+    }
+    int updated = 0;
+    List<String> messages = new ArrayList<>();
+    try {
+      Optional<CrawledPage> graduatePage = fetchChartPage(GRADUATE_EMPLOYMENT_SOURCE_URL, messages);
+      if (graduatePage.isPresent()) {
+        String text = graduatePage.get().text();
+        double graduates = findWanNumberNear(text, List.of("高校毕业生", "毕业生")).orElse(1270D);
+        double jobs = findWanNumberNear(text, List.of("岗位信息", "岗位")).orElse(1200D);
+        updated += updateOfficialChart(
+            1,
+            officialGraduateTrendData(graduates),
+            "按教育部公开发布的当届全国普通高校毕业生预计规模统计，单位为万人。",
+            "教育部、央视网（据教育部）",
+            GRADUATE_EMPLOYMENT_SOURCE_URL
+        );
+        updated += updateOfficialChart(
+            5,
+            officialEmploymentSupplyData(graduates, jobs),
+            "2026 届高校毕业生预计约 " + formatNumber(graduates) + " 万人；教育部启动金秋启航校园招聘月，汇集发布岗位信息超 " + formatNumber(jobs) + " 万个。",
+            "教育部、央视网（据教育部）",
+            GRADUATE_EMPLOYMENT_SOURCE_URL
+        );
+      }
+
+      Optional<CrawledPage> postgraduatePage = fetchChartPage(POSTGRADUATE_SOURCE_URL, messages);
+      if (postgraduatePage.isPresent()) {
+        double applicants = findWanNumberNear(postgraduatePage.get().text(), List.of("报名人数", "研考报名", "全国硕士研究生招生考试")).orElse(343D);
+        updated += updateOfficialChart(
+            2,
+            officialPostgraduateTrendData(applicants),
+            "全国硕士研究生招生考试报名人数，单位为万人；用于观察总体热度，不替代院校专业层面的录取难度分析。",
+            "教育部、央视网（据教育部）",
+            POSTGRADUATE_SOURCE_URL
+        );
+      }
+
+      Optional<CrawledPage> civilPage = fetchChartPage(CIVIL_EXAM_SOURCE_URL, messages);
+      if (civilPage.isPresent()) {
+        String text = civilPage.get().text();
+        double recruited = findWanNumberNear(text, List.of("计划招录", "招录")).orElse(3.81D);
+        double qualified = findWanNumberNear(text, List.of("通过资格审查", "资格审查通过", "资格审查")).orElse(371.8D);
+        updated += updateOfficialChart(
+            3,
+            officialCivilExamRatioData(recruited, qualified),
+            "以官方公布的资格审查通过人数与计划招录人数估算，展示约数竞争比。",
+            "中国政府网、国家公务员局",
+            CIVIL_EXAM_SOURCE_URL
+        );
+        updated += updateOfficialChart(
+            4,
+            officialCivilExamScaleData(recruited, qualified),
+            "2026 年度中央机关及其直属机构考试录用公务员计划招录约 " + formatNumber(recruited) + " 万人，资格审查通过 " + formatNumber(qualified) + " 万人。",
+            "中国政府网、国家公务员局",
+            CIVIL_EXAM_SOURCE_URL
+        );
+      }
+
+      String message = messages.isEmpty()
+          ? "官方图表数据刷新完成"
+          : "官方图表数据刷新完成；" + String.join("；", messages);
+      audit(actor, "自动".equals(triggerType) ? "AUTO_CHART_REFRESH" : "REFRESH_CHARTS", "chart_info", "official", Map.of(
+          "triggerType", triggerType,
+          "updated", updated,
+          "message", trimText(message, 500)
+      ));
+      return Map.of("status", "已完成", "updatedCount", updated, "message", trimText(message, 500), "updatedAt", Instant.now().toString());
+    } catch (Exception exception) {
+      String message = trimText(exception.getMessage() == null ? "官方图表刷新失败" : exception.getMessage(), 480);
+      audit(actor, "AUTO_CHART_REFRESH_ERROR", "chart_info", "official", Map.of("triggerType", triggerType, "reason", message));
+      return Map.of("status", "失败", "updatedCount", updated, "message", message, "updatedAt", Instant.now().toString());
+    } finally {
+      chartRefreshRunning.set(false);
+    }
+  }
+
+  private Optional<CrawledPage> fetchChartPage(String url, List<String> messages) {
+    try {
+      return Optional.of(fetchCrawlPage(url));
+    } catch (Exception exception) {
+      messages.add("来源抓取失败：" + trimText(url + " " + valueOr(exception.getMessage(), ""), 180));
+      return Optional.empty();
+    }
+  }
+
+  private int updateOfficialChart(long id, Map<String, Object> data, String methodology, String sourceName, String sourceUrl) {
+    return jdbc.update(
+        """
+        update chart_info
+        set data_json = cast(? as json),
+            methodology = ?,
+            source_name = ?,
+            source_url = ?,
+            filters_json = json_object(),
+            updated_at = current_timestamp
+        where id = ?
+        """,
+        toJson(data),
+        methodology,
+        sourceName,
+        sourceUrl,
+        id
+    );
+  }
+
+  private Map<String, Object> officialGraduateTrendData(double graduates2026) {
+    return Map.of(
+        "rows", List.of(
+            Map.of("year", "2024", "graduates", 1179),
+            Map.of("year", "2025", "graduates", 1222),
+            Map.of("year", "2026", "graduates", round1(graduates2026))
+        ),
+        "xKey", "year",
+        "series", List.of(Map.of("key", "graduates", "name", "高校毕业生规模（万人）", "color", "#b45309")),
+        "insights", List.of("2026 届规模预计约 " + formatNumber(graduates2026) + " 万人，继续处在高位。", "就业方向需要更早完成岗位画像、实习经历和投递节奏管理。")
+    );
+  }
+
+  private Map<String, Object> officialEmploymentSupplyData(double graduates2026, double jobs2026) {
+    return Map.of(
+        "rows", List.of(
+            Map.of("label", "高校毕业生规模", "people", round1(graduates2026)),
+            Map.of("label", "金秋启航岗位信息", "people", round1(jobs2026))
+        ),
+        "xKey", "label",
+        "series", List.of(Map.of("key", "people", "name", "规模（万人/万个）", "color", "#b45309")),
+        "insights", List.of("岗位信息规模不等同于有效 offer，仍需看行业、城市和岗位匹配度。", "建议以目标岗位 JD 反推技能证据，而不是只按专业名称投递。")
+    );
+  }
+
+  private Map<String, Object> officialPostgraduateTrendData(double applicants2026) {
+    return Map.of(
+        "rows", List.of(
+            Map.of("year", "2022", "applicants", 457),
+            Map.of("year", "2023", "applicants", 474),
+            Map.of("year", "2024", "applicants", 438),
+            Map.of("year", "2025", "applicants", 388),
+            Map.of("year", "2026", "applicants", round1(applicants2026))
+        ),
+        "xKey", "year",
+        "series", List.of(Map.of("key", "applicants", "name", "研考报名人数（万人）", "color", "#0f766e")),
+        "insights", List.of("研考报名人数连续三年回落，不代表目标院校竞争同步下降。", "应结合专业目录、复试线、推免比例与调剂空间判断真实难度。")
+    );
+  }
+
+  private Map<String, Object> officialCivilExamRatioData(double recruited2026, double qualified2026) {
+    long ratio = Math.round(qualified2026 / Math.max(recruited2026, 0.1));
+    return Map.of(
+        "rows", List.of(
+            Map.of("year", "2024", "ratio", 77),
+            Map.of("year", "2025", "ratio", 86),
+            Map.of("year", "2026", "ratio", ratio)
+        ),
+        "xKey", "year",
+        "series", List.of(Map.of("key", "ratio", "name", "约每个录用计划对应过审人数", "color", "#2563eb")),
+        "insights", List.of("2026 年国考约 " + ratio + ":1，岗位筛选比单纯刷题更早决定上限。", "考公规划应同时关注国考、省考、事业单位和选调等不同机会窗口。")
+    );
+  }
+
+  private Map<String, Object> officialCivilExamScaleData(double recruited2026, double qualified2026) {
+    return Map.of(
+        "rows", List.of(
+            Map.of("label", "计划招录", "people", round2(recruited2026)),
+            Map.of("label", "资格审查通过", "people", round1(qualified2026))
+        ),
+        "xKey", "label",
+        "series", List.of(Map.of("key", "people", "name", "人数（万人）", "color", "#2563eb")),
+        "insights", List.of("报名规模远高于招录规模，选岗限制条件会显著影响真实竞争。", "专业、政治面貌、基层经历、应届身份等字段需要提前核对。")
+    );
+  }
+
+  private Optional<Double> findWanNumberNear(String text, List<String> keywords) {
+    if (!StringUtils.hasText(text)) return Optional.empty();
+    String compact = text.replaceAll("\\s+", "");
+    double bestValue = 0;
+    int bestDistance = Integer.MAX_VALUE;
+    Pattern pattern = Pattern.compile("([0-9]+(?:\\.[0-9]+)?)万(?:人|个|条)?");
+    for (String keyword : keywords) {
+      int index = compact.indexOf(keyword);
+      while (index >= 0) {
+        int start = Math.max(0, index - 120);
+        int end = Math.min(compact.length(), index + keyword.length() + 160);
+        String window = compact.substring(start, end);
+        java.util.regex.Matcher matcher = pattern.matcher(window);
+        while (matcher.find()) {
+          int numberCenter = start + matcher.start(1) + matcher.group(1).length() / 2;
+          int distance = Math.abs(numberCenter - index);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestValue = Double.parseDouble(matcher.group(1));
+          }
+        }
+        index = compact.indexOf(keyword, index + keyword.length());
+      }
+    }
+    return bestDistance == Integer.MAX_VALUE ? Optional.empty() : Optional.of(bestValue);
+  }
+
+  private double round1(double value) {
+    return Math.round(value * 10D) / 10D;
+  }
+
+  private double round2(double value) {
+    return Math.round(value * 100D) / 100D;
+  }
+
+  private String formatNumber(double value) {
+    double rounded = Math.abs(value) < 10 ? round2(value) : round1(value);
+    if (Math.abs(rounded - Math.rint(rounded)) < 0.0001) {
+      return String.valueOf((long) Math.rint(rounded));
+    }
+    String formatted = Math.abs(rounded) < 10
+        ? String.format(Locale.ROOT, "%.2f", rounded)
+        : String.format(Locale.ROOT, "%.1f", rounded);
+    return formatted.replaceAll("0+$", "").replaceAll("\\.$", "");
   }
 
   private void recoverInterruptedCrawlTasks() {

@@ -2226,6 +2226,14 @@ function AdminView() {
     });
   }
 
+  async function refreshOfficialCharts() {
+    if (!admin) return;
+    await runAdminAction("refresh-charts", async () => {
+      const result = await adminApi.refreshCharts(admin.token);
+      return String(result.message || "官方图表数据已刷新");
+    });
+  }
+
   async function savePath() {
     if (!admin) return;
     await runAdminAction("save-path", async () => {
@@ -2702,9 +2710,13 @@ function AdminView() {
               <span>图表数据 JSON，需要包含 rows 数组</span>
               <textarea className="code-textarea" value={chartForm.dataText} onChange={(event) => setChartForm({ ...chartForm, dataText: event.target.value })} />
             </label>
-            <div className="helper-text">趋势图 rows 使用 year/考公/考研/就业；柱状图使用 label；环图使用 path/score；雷达图使用 subject；时间线使用 stage/description。</div>
+            <div className="helper-text">图表数据可声明 xKey、series、insights；趋势图/柱状图会按 series 动态渲染，时间线使用 stage/description。</div>
             <div className="button-row">
               <button className="primary-button" onClick={saveChart} disabled={adminWorking}>{busyLabel("save-chart", "保存图表")}</button>
+              <button className="secondary-button" onClick={refreshOfficialCharts} disabled={adminWorking}>
+                <RefreshCcw size={16} />
+                {busyLabel("refresh-charts", "刷新官方数据")}
+              </button>
               <button className="secondary-button" onClick={() => setChartForm(emptyChartForm)} disabled={adminWorking}>新建</button>
             </div>
           </div>

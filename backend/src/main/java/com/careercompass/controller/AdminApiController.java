@@ -119,6 +119,11 @@ public class AdminApiController {
     return ApiResponse.message("图表已保存", service.saveChart(request));
   }
 
+  @PostMapping("/charts/refresh")
+  public ApiResponse<Map<String, Object>> refreshCharts() {
+    return ApiResponse.message("官方图表数据已刷新", service.refreshOfficialCharts());
+  }
+
   @GetMapping("/paths")
   public ApiResponse<List<PathConfigItem>> paths() {
     return ApiResponse.ok(service.adminPaths());

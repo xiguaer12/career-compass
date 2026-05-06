@@ -457,6 +457,8 @@ export const adminApi = {
   charts: (token: string) => api<ChartItem[]>("/admin/charts", {}, token),
   saveChart: (token: string, chart: Partial<ChartItem>) =>
     api<Record<string, unknown>>("/admin/charts/save", { method: "POST", body: JSON.stringify(chart) }, token),
+  refreshCharts: (token: string) =>
+    api<Record<string, unknown>>("/admin/charts/refresh", { method: "POST" }, token),
   tags: (token: string, type = "") =>
     api<TagItem[]>(`/admin/tags${type ? `?type=${encodeURIComponent(type)}` : ""}`, {}, token),
   saveTag: (token: string, tag: Partial<TagItem>) =>

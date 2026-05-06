@@ -5,7 +5,7 @@ spring:
   application:
     name: career-compass-backend
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3307/career_compass?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/career_compass?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
     username: ${SPRING_DATASOURCE_USERNAME:career_compass}
     password: ${SPRING_DATASOURCE_PASSWORD:career_compass_pwd}
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -22,6 +22,14 @@ app:
   student-email-pattern: '${STUDENT_EMAIL_PATTERN:^\d{10}@st\.usst\.edu\.cn$}'
   graduation-years: ${GRADUATION_YEARS:2025,2026,2027}
   expose-dev-verification-codes: ${EXPOSE_DEV_VERIFICATION_CODES:true}
+  auto-crawl:
+    enabled: ${AUTO_CRAWL_ENABLED:true}
+    initial-delay-minutes: ${AUTO_CRAWL_INITIAL_DELAY_MINUTES:5}
+    interval-minutes: ${AUTO_CRAWL_INTERVAL_MINUTES:60}
+  chart-auto-refresh:
+    enabled: ${CHART_AUTO_REFRESH_ENABLED:true}
+    initial-delay-minutes: ${CHART_AUTO_REFRESH_INITIAL_DELAY_MINUTES:10}
+    interval-minutes: ${CHART_AUTO_REFRESH_INTERVAL_MINUTES:720}
   llm:
     enabled: ${LLM_ENABLED:false}
     api-key: ${LLM_API_KEY:}

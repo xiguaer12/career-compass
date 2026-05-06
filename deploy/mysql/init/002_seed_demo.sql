@@ -73,7 +73,7 @@ VALUES
         json_object('year','2025','ratio',86),
         json_object('year','2026','ratio',98)
       )
-    ), '以官方公布的资格审查通过人数与计划招录人数估算，展示约数竞争比。', '中国政府网、国家公务员局', 'https://www.gov.cn/lianbo/bumen/202510/content_7036992.htm', '已发布', '公开', '图表中心'),
+    ), '以官方公布的资格审查通过人数与计划招录人数估算，展示约数竞争比。', '中国政府网、国家公务员局', 'https://www.gov.cn/lianbo/bumen/202510/content_7045734.htm', '已发布', '公开', '图表中心'),
   (4, '2026 国考招录与过审规模', '柱状图', '考公', json_object(
       'xKey','label',
       'series', json_array(json_object('key','people','name','人数（万人）','color','#2563eb')),
@@ -82,7 +82,7 @@ VALUES
         json_object('label','计划招录','people',3.81),
         json_object('label','资格审查通过','people',371.8)
       )
-    ), '2026 年度中央机关及其直属机构考试录用公务员计划招录约 3.81 万人，资格审查通过 371.8 万人。', '中国政府网、国家公务员局', 'https://www.gov.cn/lianbo/bumen/202510/content_7036992.htm', '已发布', '公开', '图表中心'),
+    ), '2026 年度中央机关及其直属机构考试录用公务员计划招录约 3.81 万人，资格审查通过 371.8 万人。', '中国政府网、国家公务员局', 'https://www.gov.cn/lianbo/bumen/202510/content_7045734.htm', '已发布', '公开', '图表中心'),
   (5, '2026 届就业供需参考', '柱状图', '就业', json_object(
       'xKey','label',
       'series', json_array(json_object('key','people','name','规模（万人/万个）','color','#b45309')),
