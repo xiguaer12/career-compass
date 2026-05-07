@@ -2291,6 +2291,7 @@ function AdminView() {
   const [sourceKeyword, setSourceKeyword] = useState("");
   const [studentKeyword, setStudentKeyword] = useState("");
   const [postReviewStatus, setPostReviewStatus] = useState("待审核");
+  const [expandedReportId, setExpandedReportId] = useState<number | null>(null);
 
   async function refreshAdmin(token = admin?.token) {
     if (!token) return;
@@ -2305,7 +2306,7 @@ function AdminView() {
       adminApi.paths(token),
       adminApi.tags(token),
       adminApi.aiConfigs(token),
-      adminApi.reports(token)
+      adminApi.reports(token, "待处理")
     ]);
     setDashboard(nextDashboard);
     setSources(nextSources);
@@ -2548,7 +2549,9 @@ function AdminView() {
     if (!admin) return;
     await runAdminAction(`report-${id}-${status}`, async () => {
       await adminApi.handleReport(admin.token, id, status, status === "已处理" ? "已完成核查与处置" : "暂不处理");
-      return "举报处理结果已记录";
+      setExpandedReportId(null);
+      setReports((current) => current.filter((report) => report.id !== id));
+      return "举报处理结果已记录，已从待处理列表移除";
     });
   }
 
@@ -2869,19 +2872,42 @@ function AdminView() {
           <div className="surface">
             <SectionTitle icon={Flag} title="举报处理" />
             <div className="queue-list">
-              {reports.map((report) => (
-                <div className="queue-item" key={report.id}>
-                  <div>
-                    <strong>{report.targetType} #{report.targetId}</strong>
-                    <span>{report.reason} · {report.status} · 提交 {formatAdminTime(report.createdAt)}{report.handledAt ? ` · 处理 ${formatAdminTime(report.handledAt)}` : ""}</span>
+              {reports.map((report) => {
+                const targetPost = report.targetType === "post" ? posts.find((post) => post.id === report.targetId) : null;
+                const expanded = expandedReportId === report.id;
+                return (
+                  <div className="queue-item report-review-item" key={report.id}>
+                    <div>
+                      <strong>{targetPost?.title || `${report.targetType} #${report.targetId}`}</strong>
+                      <span>{report.reason} · {report.status} · 提交 {formatAdminTime(report.createdAt)}</span>
+                      {targetPost && <small>{targetPost.type} · {targetPost.path} · 内容状态 {targetPost.status}</small>}
+                      {expanded && (
+                        <div className="report-detail-box">
+                          <div><b>举报编号</b><span>#{report.id}</span></div>
+                          <div><b>举报人</b><span>学生 #{report.reporterStudentId}</span></div>
+                          <div><b>举报对象</b><span>{report.targetType} #{report.targetId}</span></div>
+                          <div><b>举报原因</b><span>{report.reason}</span></div>
+                          <div><b>提交时间</b><span>{formatAdminTime(report.createdAt)}</span></div>
+                          {targetPost && (
+                            <div className="report-detail-content">
+                              <b>被举报内容</b>
+                              <span>{targetPost.summary || targetPost.body || "暂无正文摘要"}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="button-row compact-actions">
+                      <button className="secondary-button" onClick={() => setExpandedReportId(expanded ? null : report.id)} disabled={adminWorking}>
+                        {expanded ? "收起" : "详情"}
+                      </button>
+                      <button className="secondary-button" onClick={() => handleReport(report.id, "已处理")} disabled={adminWorking}>{busyLabel(`report-${report.id}-已处理`, "处理")}</button>
+                      <button className="secondary-button danger-button" onClick={() => handleReport(report.id, "已驳回")} disabled={adminWorking}>{busyLabel(`report-${report.id}-已驳回`, "驳回")}</button>
+                    </div>
                   </div>
-                  <div className="button-row compact-actions">
-                    <button className="secondary-button" onClick={() => handleReport(report.id, "已处理")} disabled={adminWorking}>{busyLabel(`report-${report.id}-已处理`, "处理")}</button>
-                    <button className="secondary-button" onClick={() => handleReport(report.id, "已驳回")} disabled={adminWorking}>{busyLabel(`report-${report.id}-已驳回`, "驳回")}</button>
-                  </div>
-                </div>
-              ))}
-              {reports.length === 0 && <div className="empty-state">暂无举报</div>}
+                );
+              })}
+              {reports.length === 0 && <div className="empty-state">暂无待处理举报</div>}
             </div>
           </div>
         </section>
