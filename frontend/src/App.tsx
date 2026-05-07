@@ -101,6 +101,7 @@ type PostDraft = {
   path: string;
   type: string;
   anonymous: boolean;
+  imageUrls: string[];
 };
 
 type ChartForm = {
@@ -144,7 +145,8 @@ const emptyPostDraft: PostDraft = {
   body: "",
   path: "就业",
   type: "问答",
-  anonymous: true
+  anonymous: true,
+  imageUrls: []
 };
 
 const emptyChartForm: ChartForm = {
@@ -180,7 +182,8 @@ function draftFromPost(post: CommunityPost): PostDraft {
     body: post.body || post.summary || "",
     path: post.path || "就业",
     type: post.type || "问答",
-    anonymous: post.anonymous ?? true
+    anonymous: post.anonymous ?? true,
+    imageUrls: post.imageUrls || []
   };
 }
 
@@ -1889,6 +1892,8 @@ function CommunityView({
   const [posts, setPosts] = useState<CommunityPost[]>([]);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [imageFiles, setImageFiles] = useState<File[]>([]);
+  const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const [composePath, setComposePath] = useState("就业");
   const [composeType, setComposeType] = useState("问答");
   const [path, setPath] = useState("");
@@ -1902,8 +1907,15 @@ function CommunityView({
   const [editingPostId, setEditingPostId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState<PostDraft>(emptyPostDraft);
   const [editSaving, setEditSaving] = useState(false);
+  const [uploadingImages, setUploadingImages] = useState(false);
   const [error, setError] = useState("");
   const ownPostIds = useMemo(() => new Set(ownPosts.map((post) => post.id)), [ownPosts]);
+
+  useEffect(() => {
+    const urls = imageFiles.map((file) => URL.createObjectURL(file));
+    setImagePreviews(urls);
+    return () => urls.forEach((url) => URL.revokeObjectURL(url));
+  }, [imageFiles]);
 
   useEffect(() => {
     communityApi.list({ path, type, keyword, sort }).then(setPosts).catch(() => undefined);
@@ -1942,6 +1954,27 @@ function CommunityView({
     }
   }
 
+  function addImageFiles(files: FileList | null) {
+    if (!files) return;
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+    const nextFiles = Array.from(files);
+    if (imageFiles.length + nextFiles.length > 3) {
+      setError("每条内容最多添加 3 张图片");
+      return;
+    }
+    const invalid = nextFiles.find((file) => !allowedTypes.includes(file.type) || file.size > 5 * 1024 * 1024);
+    if (invalid) {
+      setError("图片仅支持 JPG、PNG、WebP、GIF，单张不超过 5MB");
+      return;
+    }
+    setError("");
+    setImageFiles((current) => [...current, ...nextFiles]);
+  }
+
+  function removeImageFile(index: number) {
+    setImageFiles((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  }
+
   async function addPost() {
     if (!session) {
       onLogin();
@@ -1949,16 +1982,21 @@ function CommunityView({
     }
     if (!title.trim() || !body.trim()) return;
     setError("");
+    setUploadingImages(true);
     try {
-      const next = await communityApi.create(session.token, title, body, composePath, composeType, true);
+      const imageUrls = imageFiles.length ? await communityApi.uploadImages(session.token, imageFiles) : [];
+      const next = await communityApi.create(session.token, title, body, composePath, composeType, true, imageUrls);
       setPosts(await communityApi.list({ path, type, keyword, sort }));
       setOwnPosts((current) => [next, ...current.filter((post) => post.id !== next.id)]);
       setSelectedPost(next);
       setTitle("");
       setBody("");
+      setImageFiles([]);
       setNotice("内容已提交审核，审核通过后会公开展示");
     } catch (exception) {
       setError(exception instanceof Error ? exception.message : "发布失败");
+    } finally {
+      setUploadingImages(false);
     }
   }
 
@@ -2004,7 +2042,8 @@ function CommunityView({
         editDraft.body,
         editDraft.path,
         editDraft.type,
-        editDraft.anonymous
+        editDraft.anonymous,
+        editDraft.imageUrls
       );
       setOwnPosts((current) => [updated, ...current.filter((post) => post.id !== updated.id)]);
       setPosts(await communityApi.list({ path, type, keyword, sort }));
@@ -2088,6 +2127,29 @@ function CommunityView({
                   placeholder="输入正文，至少 10 个字符"
                   rows={7}
                 />
+                <div className="image-upload-panel">
+                  <label className="image-upload-button">
+                    <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={(event) => {
+                      addImageFiles(event.target.files);
+                      event.target.value = "";
+                    }} />
+                    <Plus size={16} />
+                    添加图片
+                  </label>
+                  <span>最多 3 张，单张不超过 5MB</span>
+                </div>
+                {imagePreviews.length > 0 && (
+                  <div className="image-preview-grid">
+                    {imagePreviews.map((src, index) => (
+                      <div className="image-preview-item" key={src}>
+                        <img src={src} alt={`待上传图片 ${index + 1}`} />
+                        <button type="button" className="image-remove-button" title="移除图片" onClick={() => removeImageFile(index)}>
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="community-compose-meta">
                 <label>
@@ -2105,9 +2167,9 @@ function CommunityView({
                     <option value="经验帖">经验帖</option>
                   </select>
                 </label>
-                <button className="primary-button full-width" onClick={addPost}>
+                <button className="primary-button full-width" onClick={addPost} disabled={uploadingImages}>
                   <Plus size={17} />
-                  {session ? "发布" : "登录后发布"}
+                  {uploadingImages ? "上传中" : session ? "发布" : "登录后发布"}
                 </button>
               </div>
             </div>
@@ -2186,6 +2248,7 @@ function CommunityView({
               </div>
               <h2>{selectedPost.title}</h2>
               <p className="community-detail-body">{selectedPost.body}</p>
+              <PostImageGrid imageUrls={selectedPost.imageUrls} detail />
               <small>{selectedPost.authorDisplay || "匿名用户"} · {selectedPost.createdAt}</small>
               {ownPostIds.has(selectedPost.id) && (
                 <div className="button-row compact-actions">
@@ -3149,7 +3212,8 @@ function MeView({
         editDraft.body,
         editDraft.path,
         editDraft.type,
-        editDraft.anonymous
+        editDraft.anonymous,
+        editDraft.imageUrls
       );
       await refreshCommunity(session.token);
       cancelEdit();
@@ -3429,6 +3493,7 @@ function PostList({
               </div>
               <h3>{post.title}</h3>
               <p>{post.summary || post.body}</p>
+              <PostImageGrid imageUrls={post.imageUrls} />
               <small>{post.author || post.authorDisplay || "匿名用户"} · {post.createdAt}</small>
             </div>
             {showActions && (
@@ -3480,6 +3545,20 @@ function PostList({
   );
 }
 
+function PostImageGrid({ imageUrls, detail = false }: { imageUrls?: string[]; detail?: boolean }) {
+  const urls = (imageUrls || []).filter(Boolean);
+  if (urls.length === 0) return null;
+  return (
+    <div className={detail ? "post-image-grid detail-image-grid" : "post-image-grid"}>
+      {urls.map((url, index) => (
+        <a href={url} target="_blank" rel="noreferrer" key={`${url}-${index}`}>
+          <img src={url} alt={`帖子图片 ${index + 1}`} loading="lazy" />
+        </a>
+      ))}
+    </div>
+  );
+}
+
 function PostEditor({
   draft,
   onChange,
@@ -3521,6 +3600,18 @@ function PostEditor({
         </label>
       </div>
       <textarea value={draft.body} onChange={(event) => onChange({ ...draft, body: event.target.value })} />
+      {draft.imageUrls.length > 0 && (
+        <div className="edit-image-list">
+          {draft.imageUrls.map((url, index) => (
+            <div className="edit-image-item" key={`${url}-${index}`}>
+              <img src={url} alt={`已添加图片 ${index + 1}`} />
+              <button className="secondary-button" onClick={() => onChange({ ...draft, imageUrls: draft.imageUrls.filter((_, itemIndex) => itemIndex !== index) })}>
+                移除
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="button-row">
         <button className="primary-button" onClick={onSave} disabled={saving}>
           <Save size={16} />

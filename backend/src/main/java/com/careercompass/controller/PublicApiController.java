@@ -3,8 +3,16 @@ package com.careercompass.controller;
 import com.careercompass.model.Dtos.*;
 import com.careercompass.service.CompassService;
 import jakarta.servlet.http.HttpServletRequest;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -16,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api")
@@ -224,6 +233,25 @@ public class PublicApiController {
       @RequestBody PostRequest request
   ) {
     return ApiResponse.message("帖子已提交审核", service.createPost(security.requireStudent(authorization), request));
+  }
+
+  @PostMapping(value = "/community/uploads", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+  public ApiResponse<List<String>> uploadCommunityImages(
+      @RequestHeader("Authorization") String authorization,
+      @RequestParam("files") List<MultipartFile> files
+  ) {
+    return ApiResponse.message("图片上传成功", service.storeCommunityImages(security.requireStudent(authorization), files));
+  }
+
+  @GetMapping("/community/uploads/{fileName:.+}")
+  public ResponseEntity<Resource> communityImage(@PathVariable String fileName) throws IOException {
+    Path path = service.communityUploadPath(fileName);
+    String contentType = Files.probeContentType(path);
+    MediaType mediaType = contentType == null ? MediaType.APPLICATION_OCTET_STREAM : MediaType.parseMediaType(contentType);
+    return ResponseEntity.ok()
+        .header(HttpHeaders.CACHE_CONTROL, "public, max-age=604800")
+        .contentType(mediaType)
+        .body(new FileSystemResource(path));
   }
 
   @PutMapping("/community/posts/{id}")

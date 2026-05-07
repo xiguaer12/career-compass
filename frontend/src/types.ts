@@ -26,6 +26,7 @@ export type CommunityPost = {
   likes: number;
   favorites: number;
   replies: number;
+  imageUrls?: string[];
   createdAt: string;
 };
 

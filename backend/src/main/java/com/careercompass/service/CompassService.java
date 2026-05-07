@@ -6,6 +6,11 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
@@ -24,6 +29,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -36,6 +42,7 @@ import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 @Service
 public class CompassService {
@@ -46,6 +53,7 @@ public class CompassService {
   private static final String GRADUATE_EMPLOYMENT_SOURCE_URL = "https://news.cctv.com/2025/11/20/ARTI0xYbzeyS5Y6Zky3R3VZg251120.shtml";
   private static final String POSTGRADUATE_SOURCE_URL = "https://news.cctv.cn/2025/11/24/ARTINT5iuLLp0mtEfdDd7Kkl251124.shtml";
   private static final String CIVIL_EXAM_SOURCE_URL = "https://www.gov.cn/lianbo/bumen/202510/content_7045734.htm";
+  private static final int MAX_COMMUNITY_IMAGES = 3;
   private static final List<String> REQUIRED_QUESTION_KEYS = List.of(
       "academic", "certificates", "project", "constraints", "city", "riskPreference",
       "employmentInterest", "civilInterest", "postgraduateInterest"
@@ -86,6 +94,8 @@ public class CompassService {
   private final boolean chartAutoRefreshEnabled;
   private final int chartAutoRefreshInitialDelayMinutes;
   private final int chartAutoRefreshIntervalMinutes;
+  private final Path communityUploadDir;
+  private final long communityUploadMaxBytes;
 
   public CompassService(
       @Value("${app.student-email-pattern:^\\d{10}@st\\.usst\\.edu\\.cn$}") String studentEmailPattern,
@@ -97,6 +107,8 @@ public class CompassService {
       @Value("${app.chart-auto-refresh.enabled:true}") boolean chartAutoRefreshEnabled,
       @Value("${app.chart-auto-refresh.initial-delay-minutes:10}") int chartAutoRefreshInitialDelayMinutes,
       @Value("${app.chart-auto-refresh.interval-minutes:720}") int chartAutoRefreshIntervalMinutes,
+      @Value("${app.community-upload.dir:uploads/community}") String communityUploadDir,
+      @Value("${app.community-upload.max-image-mb:5}") long communityUploadMaxImageMb,
       JdbcTemplate jdbc,
       ObjectMapper objectMapper,
       SecurityService security,
@@ -114,6 +126,8 @@ public class CompassService {
     this.chartAutoRefreshEnabled = chartAutoRefreshEnabled;
     this.chartAutoRefreshInitialDelayMinutes = Math.max(1, chartAutoRefreshInitialDelayMinutes);
     this.chartAutoRefreshIntervalMinutes = Math.max(30, chartAutoRefreshIntervalMinutes);
+    this.communityUploadDir = Path.of(communityUploadDir).toAbsolutePath().normalize();
+    this.communityUploadMaxBytes = Math.max(1, communityUploadMaxImageMb) * 1024 * 1024;
     this.jdbc = jdbc;
     this.objectMapper = objectMapper;
     this.security = security;
@@ -147,6 +161,7 @@ public class CompassService {
     addColumn("community_post", "reject_reason VARCHAR(300)");
     addColumn("community_post", "pinned TINYINT(1) NOT NULL DEFAULT 0");
     addColumn("community_post", "featured TINYINT(1) NOT NULL DEFAULT 0");
+    addColumn("community_post", "image_urls_json JSON");
     addColumn("community_post", "deleted_at TIMESTAMP NULL");
     addColumn("community_comment", "best_answer TINYINT(1) NOT NULL DEFAULT 0");
     addColumn("community_comment", "updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
@@ -929,13 +944,14 @@ public class CompassService {
   public CommunityPost createPost(AuthUser user, PostRequest request) {
     requireCompletedStudent(user);
     validatePost(request);
+    List<String> imageUrls = normalizePostImages(request.imageUrls());
     KeyHolder keyHolder = new GeneratedKeyHolder();
     jdbc.update(connection -> {
       PreparedStatement statement = connection.prepareStatement(
           """
           insert into community_post
-            (student_id, title, body, type, path, anonymous, status)
-          values (?, ?, ?, ?, ?, ?, '待审核')
+            (student_id, title, body, type, path, anonymous, image_urls_json, status)
+          values (?, ?, ?, ?, ?, ?, cast(? as json), '待审核')
           """,
           Statement.RETURN_GENERATED_KEYS
       );
@@ -945,6 +961,7 @@ public class CompassService {
       statement.setString(4, StringUtils.hasText(request.type()) ? request.type() : "问答");
       statement.setString(5, StringUtils.hasText(request.path()) ? request.path() : "就业");
       statement.setBoolean(6, request.anonymous());
+      statement.setString(7, toJson(imageUrls));
       return statement;
     }, keyHolder);
     long id = keyHolder.getKey().longValue();
@@ -955,10 +972,12 @@ public class CompassService {
 
   public CommunityPost updateOwnPost(AuthUser user, long id, PostRequest request) {
     validatePost(request);
+    List<String> imageUrls = normalizePostImages(request.imageUrls());
     int updated = jdbc.update(
         """
         update community_post
-        set title = ?, body = ?, type = ?, path = ?, anonymous = ?, status = '待审核', reject_reason = null, updated_at = current_timestamp
+        set title = ?, body = ?, type = ?, path = ?, anonymous = ?, image_urls_json = cast(? as json),
+            status = '待审核', reject_reason = null, updated_at = current_timestamp
         where id = ? and student_id = ? and deleted_at is null
         """,
         request.title(),
@@ -966,12 +985,45 @@ public class CompassService {
         valueOr(request.type(), "问答"),
         valueOr(request.path(), "就业"),
         request.anonymous(),
+        toJson(imageUrls),
         id,
         user.id()
     );
     if (updated == 0) throw new IllegalArgumentException("只能编辑自己的帖子");
     audit("student:" + user.email(), "UPDATE_POST", "community_post", String.valueOf(id), Map.of("status", "待审核"));
     return communityPostAny(id).orElseThrow();
+  }
+
+  public List<String> storeCommunityImages(AuthUser user, List<MultipartFile> files) {
+    requireCompletedStudent(user);
+    if (files == null || files.isEmpty()) {
+      throw new IllegalArgumentException("请选择要上传的图片");
+    }
+    if (files.size() > MAX_COMMUNITY_IMAGES) {
+      throw new IllegalArgumentException("每条内容最多添加 " + MAX_COMMUNITY_IMAGES + " 张图片");
+    }
+    try {
+      Files.createDirectories(communityUploadDir);
+    } catch (IOException exception) {
+      throw new IllegalStateException("图片目录创建失败", exception);
+    }
+    List<String> urls = new ArrayList<>();
+    for (MultipartFile file : files) {
+      urls.add(storeCommunityImage(file));
+    }
+    audit("student:" + user.email(), "UPLOAD_COMMUNITY_IMAGES", "community_post", "pending", Map.of("count", urls.size()));
+    return urls;
+  }
+
+  public Path communityUploadPath(String fileName) {
+    if (!StringUtils.hasText(fileName) || fileName.contains("..") || fileName.contains("/") || fileName.contains("\\")) {
+      throw new IllegalArgumentException("图片不存在");
+    }
+    Path resolved = communityUploadDir.resolve(fileName).normalize();
+    if (!resolved.startsWith(communityUploadDir) || !Files.exists(resolved) || !Files.isRegularFile(resolved)) {
+      throw new IllegalArgumentException("图片不存在");
+    }
+    return resolved;
   }
 
   public Map<String, Object> deleteOwnPost(AuthUser user, long id) {
@@ -2976,6 +3028,7 @@ public class CompassService {
         rs.getInt("likes"),
         rs.getInt("favorites"),
         rs.getInt("replies"),
+        jsonToStringList(rs.getString("image_urls_json")),
         rs.getTimestamp("created_at").toInstant()
     );
   }
@@ -3359,6 +3412,56 @@ public class CompassService {
     if (List.of("代考", "包过", "广告").stream().anyMatch(text::contains)) {
       throw new IllegalArgumentException("内容命中敏感词规则，请调整后重新提交");
     }
+  }
+
+  private List<String> normalizePostImages(List<String> imageUrls) {
+    if (imageUrls == null || imageUrls.isEmpty()) return List.of();
+    List<String> normalized = imageUrls.stream()
+        .map(value -> value == null ? "" : value.trim())
+        .filter(StringUtils::hasText)
+        .distinct()
+        .toList();
+    if (normalized.size() > MAX_COMMUNITY_IMAGES) {
+      throw new IllegalArgumentException("每条内容最多添加 " + MAX_COMMUNITY_IMAGES + " 张图片");
+    }
+    for (String url : normalized) {
+      if (!url.startsWith("/api/community/uploads/")) {
+        throw new IllegalArgumentException("图片地址不合法，请重新上传");
+      }
+    }
+    return normalized;
+  }
+
+  private String storeCommunityImage(MultipartFile file) {
+    if (file == null || file.isEmpty()) {
+      throw new IllegalArgumentException("图片不能为空");
+    }
+    if (file.getSize() > communityUploadMaxBytes) {
+      throw new IllegalArgumentException("单张图片不能超过 " + (communityUploadMaxBytes / 1024 / 1024) + "MB");
+    }
+    String extension = imageExtension(file);
+    String fileName = Instant.now().toEpochMilli() + "-" + UUID.randomUUID() + extension;
+    Path target = communityUploadDir.resolve(fileName).normalize();
+    if (!target.startsWith(communityUploadDir)) {
+      throw new IllegalArgumentException("图片文件名不合法");
+    }
+    try (InputStream inputStream = file.getInputStream()) {
+      Files.copy(inputStream, target, StandardCopyOption.REPLACE_EXISTING);
+    } catch (IOException exception) {
+      throw new IllegalStateException("图片保存失败", exception);
+    }
+    return "/api/community/uploads/" + fileName;
+  }
+
+  private String imageExtension(MultipartFile file) {
+    String contentType = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
+    return switch (contentType) {
+      case "image/jpeg", "image/jpg" -> ".jpg";
+      case "image/png" -> ".png";
+      case "image/webp" -> ".webp";
+      case "image/gif" -> ".gif";
+      default -> throw new IllegalArgumentException("仅支持 JPG、PNG、WebP、GIF 图片");
+    };
   }
 
   private void requireConfirmed(Boolean confirmed, String operation) {

@@ -30,6 +30,9 @@ app:
     enabled: ${CHART_AUTO_REFRESH_ENABLED:true}
     initial-delay-minutes: ${CHART_AUTO_REFRESH_INITIAL_DELAY_MINUTES:10}
     interval-minutes: ${CHART_AUTO_REFRESH_INTERVAL_MINUTES:720}
+  community-upload:
+    dir: ${COMMUNITY_UPLOAD_DIR:uploads/community}
+    max-image-mb: ${COMMUNITY_UPLOAD_MAX_IMAGE_MB:5}
   llm:
     enabled: ${LLM_ENABLED:false}
     api-key: ${LLM_API_KEY:}

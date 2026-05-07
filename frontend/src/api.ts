@@ -380,16 +380,36 @@ export const communityApi = {
   },
   detail: (id: number) => api<CommunityPost>(`/api/community/posts/${id}`),
   comments: (id: number) => api<CommunityComment[]>(`/api/community/posts/${id}/comments`),
-  create: (token: string, title: string, body: string, path = "就业", type = "问答", anonymous = true) =>
+  uploadImages: async (token: string, files: File[]) => {
+    const formData = new FormData();
+    files.forEach((file) => formData.append("files", file));
+    const response = await fetch("/api/community/uploads", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData
+    });
+    const text = await response.text();
+    let payload: ApiResponse<string[]>;
+    try {
+      payload = text ? JSON.parse(text) as ApiResponse<string[]> : { success: response.ok, message: "", data: [] };
+    } catch {
+      throw new Error(text || `请求失败：HTTP ${response.status}`);
+    }
+    if (!response.ok || !payload.success) {
+      throw new Error(payload.message || "图片上传失败");
+    }
+    return payload.data || [];
+  },
+  create: (token: string, title: string, body: string, path = "就业", type = "问答", anonymous = true, imageUrls: string[] = []) =>
     api<CommunityPost>(
       "/api/community/posts",
-      { method: "POST", body: JSON.stringify({ title, body, type, path, anonymous }) },
+      { method: "POST", body: JSON.stringify({ title, body, type, path, anonymous, imageUrls }) },
       token
     ),
-  update: (token: string, id: number, title: string, body: string, path = "就业", type = "问答", anonymous = true) =>
+  update: (token: string, id: number, title: string, body: string, path = "就业", type = "问答", anonymous = true, imageUrls: string[] = []) =>
     api<CommunityPost>(
       `/api/community/posts/${id}`,
-      { method: "PUT", body: JSON.stringify({ title, body, type, path, anonymous }) },
+      { method: "PUT", body: JSON.stringify({ title, body, type, path, anonymous, imageUrls }) },
       token
     ),
   remove: (token: string, id: number) =>

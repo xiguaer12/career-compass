@@ -240,10 +240,11 @@ public final class Dtos {
       int likes,
       int favorites,
       int replies,
+      List<String> imageUrls,
       Instant createdAt
   ) {}
 
-  public record PostRequest(String title, String body, String type, String path, boolean anonymous) {}
+  public record PostRequest(String title, String body, String type, String path, boolean anonymous, List<String> imageUrls) {}
 
   public record CommentRequest(long postId, String body, Long parentCommentId) {}
 

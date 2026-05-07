@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS community_post (
   reject_reason VARCHAR(300),
   pinned TINYINT(1) NOT NULL DEFAULT 0,
   featured TINYINT(1) NOT NULL DEFAULT 0,
+  image_urls_json JSON,
   likes INT NOT NULL DEFAULT 0,
   favorites INT NOT NULL DEFAULT 0,
   replies INT NOT NULL DEFAULT 0,
