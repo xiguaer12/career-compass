@@ -117,9 +117,13 @@ export type ContentItem = {
   id: number;
   title: string;
   category: string;
+  body?: string;
   summary: string;
   source: string;
   sourceUrl?: string;
+  tags?: string;
+  displayPosition?: string;
+  sortOrder?: number;
   updatedAt: string;
   status: string;
 };
@@ -189,6 +193,7 @@ export type CrawlSource = {
   type: string;
   path: string;
   frequency: string;
+  trustLevel?: string;
   status: string;
   lastRunAt: string;
   passRate: string;

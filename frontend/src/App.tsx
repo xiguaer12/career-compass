@@ -2279,12 +2279,18 @@ function AdminView() {
   const [adminNotice, setAdminNotice] = useState("");
   const [adminBusy, setAdminBusy] = useState("");
   const [adminTab, setAdminTab] = useState<"overview" | "users" | "contents" | "review" | "sources" | "paths" | "charts" | "tags" | "ai">("overview");
-  const [sourceForm, setSourceForm] = useState({ name: "", url: "", type: "公开权威数据", path: "就业", frequency: "每日", trustLevel: "中", status: "启用" });
-  const [contentForm, setContentForm] = useState({ title: "首页公告", category: "公告", summary: "请完成基础档案和深度问卷。", body: "请完成基础档案和深度问卷。", sourceName: "后台维护", sourceUrl: "", tags: "公告", displayPosition: "首页", sortOrder: 1, status: "已发布" });
-  const [tagForm, setTagForm] = useState({ name: "校招", type: "内容标签", status: "启用", sortOrder: 9 });
+  const [sourceForm, setSourceForm] = useState({ id: undefined as number | undefined, name: "", url: "", type: "公开权威数据", path: "就业", frequency: "每日", trustLevel: "中", status: "启用" });
+  const [contentForm, setContentForm] = useState({ id: undefined as number | undefined, title: "首页公告", category: "公告", summary: "请完成基础档案和深度问卷。", body: "请完成基础档案和深度问卷。", sourceName: "后台维护", sourceUrl: "", tags: "公告", displayPosition: "首页", sortOrder: 1, status: "已发布" });
+  const [tagForm, setTagForm] = useState({ id: undefined as number | undefined, name: "校招", type: "内容标签", status: "启用", sortOrder: 9 });
   const [chartForm, setChartForm] = useState<ChartForm>(emptyChartForm);
   const [pathForm, setPathForm] = useState<PathForm>(emptyPathForm);
-  const [aiForm, setAiForm] = useState({ configType: "prompt", version: "PROMPT-2026.06", title: "追问提示词", content: "围绕报告输入快照给出结构化追问回答。", status: "草稿" });
+  const [aiForm, setAiForm] = useState({ id: undefined as number | undefined, configType: "prompt", version: "PROMPT-2026.06", title: "追问提示词", content: "围绕报告输入快照给出结构化追问回答。", status: "草稿" });
+  const [candidateStatus, setCandidateStatus] = useState("待审核");
+  const [candidateKeyword, setCandidateKeyword] = useState("");
+  const [contentKeyword, setContentKeyword] = useState("");
+  const [sourceKeyword, setSourceKeyword] = useState("");
+  const [studentKeyword, setStudentKeyword] = useState("");
+  const [postReviewStatus, setPostReviewStatus] = useState("待审核");
 
   async function refreshAdmin(token = admin?.token) {
     if (!token) return;
@@ -2374,7 +2380,7 @@ function AdminView() {
     if (!admin) return;
     await runAdminAction("save-source", async () => {
       await adminApi.saveSource(admin.token, sourceForm);
-      return "数据源已保存";
+      return sourceForm.id ? "数据源已更新" : "数据源已保存";
     });
   }
 
@@ -2382,22 +2388,65 @@ function AdminView() {
     if (!admin) return;
     await runAdminAction("save-content", async () => {
       await adminApi.saveContent(admin.token, contentForm);
-      return "内容配置已保存并进入对应展示位";
+      return contentForm.id ? "内容配置已更新" : "内容配置已保存并进入对应展示位";
     });
   }
 
   async function reviewCandidate(id: number, action: string, candidate?: CrawlCandidateItem) {
     if (!admin) return;
+    if (action === "驳回" && !window.confirm("确认驳回这条抓取资讯？如果它已经发布，前台对应资讯也会同步下架。")) return;
     await runAdminAction(`candidate-${id}-${action}`, async () => {
-      await adminApi.reviewCandidate(admin.token, id, action, action.includes("发布") && candidate ? {
+      const result = await adminApi.reviewCandidate(admin.token, id, action, action.includes("发布") && candidate ? {
         title: candidate.title,
         summary: candidate.summary,
         category: candidate.path || "就业",
         tags: candidate.tags || candidate.path,
         displayPosition: "路径页"
       } : { reason: "来源或内容暂不适合发布" });
+      if (action === "驳回") {
+        return `抓取候选已驳回，已同步下架 ${result.offlineContentCount ?? 0} 条前台资讯`;
+      }
       return `抓取候选已${action}`;
     });
+  }
+
+  function editSource(source: CrawlSource) {
+    setSourceForm({
+      id: source.id,
+      name: source.name,
+      url: source.url,
+      type: source.type,
+      path: source.path,
+      frequency: source.frequency,
+      trustLevel: source.trustLevel || "中",
+      status: source.status
+    });
+    setAdminTab("sources");
+  }
+
+  function newSource() {
+    setSourceForm({ id: undefined, name: "", url: "", type: "公开权威数据", path: "就业", frequency: "每日", trustLevel: "中", status: "启用" });
+  }
+
+  function editContent(content: ContentItem) {
+    setContentForm({
+      id: content.id,
+      title: content.title,
+      category: content.category,
+      summary: content.summary || "",
+      body: content.body || content.summary || "",
+      sourceName: content.source || "后台维护",
+      sourceUrl: content.sourceUrl || "",
+      tags: content.tags || content.category,
+      displayPosition: content.displayPosition || "路径页",
+      sortOrder: content.sortOrder ?? 1,
+      status: content.status
+    });
+    setAdminTab("contents");
+  }
+
+  function newContent() {
+    setContentForm({ id: undefined, title: "", category: "公告", summary: "", body: "", sourceName: "后台维护", sourceUrl: "", tags: "", displayPosition: "首页", sortOrder: 1, status: "待审核" });
   }
 
   async function updateUser(id: number, status: string) {
@@ -2421,7 +2470,7 @@ function AdminView() {
     if (!admin) return;
     await runAdminAction("save-tag", async () => {
       await adminApi.saveTag(admin.token, tagForm);
-      return "标签已保存";
+      return tagForm.id ? "标签已更新" : "标签已保存";
     });
   }
 
@@ -2483,8 +2532,16 @@ function AdminView() {
     if (!admin) return;
     await runAdminAction("save-ai", async () => {
       await adminApi.saveAiConfig(admin.token, aiForm);
-      return "AI 配置已保存";
+      return aiForm.id ? "AI 配置已更新" : "AI 配置已保存";
     });
+  }
+
+  function newTag() {
+    setTagForm({ id: undefined, name: "", type: "内容标签", status: "启用", sortOrder: 0 });
+  }
+
+  function newAiConfig() {
+    setAiForm({ id: undefined, configType: "prompt", version: "", title: "", content: "", status: "草稿" });
   }
 
   async function handleReport(id: number, status: string) {
@@ -2505,6 +2562,34 @@ function AdminView() {
         { label: "数据源", value: String(dashboard.dataSourceCount), trend: `${dashboard.crawlTaskCount} 任务`, icon: Database }
       ]
     : compactStats;
+  const pendingCandidates = candidates.filter((item) => item.reviewStatus === "待审核");
+  const visibleCandidates = candidates.filter((candidate) => {
+    const keyword = candidateKeyword.trim().toLowerCase();
+    const matchesStatus = candidateStatus === "全部" || candidate.reviewStatus === candidateStatus;
+    const matchesKeyword = !keyword || [candidate.title, candidate.summary, candidate.sourceName, candidate.path, candidate.tags || ""]
+      .some((value) => value.toLowerCase().includes(keyword));
+    return matchesStatus && matchesKeyword;
+  });
+  const visibleSources = sources.filter((source) => {
+    const keyword = sourceKeyword.trim().toLowerCase();
+    return !keyword || [source.name, source.url, source.type, source.path, source.status].some((value) => value.toLowerCase().includes(keyword));
+  });
+  const visibleContents = contents.filter((content) => {
+    const keyword = contentKeyword.trim().toLowerCase();
+    return !keyword || [content.title, content.category, content.summary, content.source, content.status].some((value) => value.toLowerCase().includes(keyword));
+  });
+  const visibleStudents = students.filter((student) => {
+    const keyword = studentKeyword.trim().toLowerCase();
+    return !keyword || [
+      student.email,
+      student.name || "",
+      student.studentNo || "",
+      student.college || "",
+      student.major || "",
+      student.status
+    ].some((value) => value.toLowerCase().includes(keyword));
+  });
+  const visibleReviewPosts = posts.filter((post) => postReviewStatus === "全部" || post.status === postReviewStatus);
 
   if (!admin) {
     return (
@@ -2561,8 +2646,9 @@ function AdminView() {
         })}
       </section>
       <section className="admin-brief">
+        <span>当前管理员：{admin.displayName}</span>
         <span>后台数据更新时间：{formatAdminTime(dashboard?.updatedAt)}</span>
-        <span>待抓取审核：{dashboard?.pendingCrawlCount ?? candidates.filter((item) => item.reviewStatus === "待审核").length} 条</span>
+        <span>待抓取审核：{dashboard?.pendingCrawlCount ?? pendingCandidates.length} 条</span>
         <span>内容审核：{posts.filter((post) => post.status === "待审核").length} 条</span>
         <button className="secondary-button" onClick={() => refreshAdmin().catch(() => setAdminError("后台数据刷新失败"))} disabled={adminWorking}>
           <RefreshCcw size={16} />
@@ -2584,6 +2670,27 @@ function AdminView() {
           <button key={key} className={adminTab === key ? "active" : ""} onClick={() => setAdminTab(key as typeof adminTab)}>{label}</button>
         ))}
       </section>
+      <section className="admin-command-strip" aria-label="后台快捷管理">
+        <button type="button" onClick={() => setAdminTab("review")}>
+          <ShieldCheck size={17} />
+          <span><strong>{posts.filter((post) => post.status === "待审核").length}</strong> 社区待审</span>
+        </button>
+        <button type="button" onClick={() => {
+          setCandidateStatus("待审核");
+          setAdminTab("sources");
+        }}>
+          <Database size={17} />
+          <span><strong>{pendingCandidates.length}</strong> 抓取候选</span>
+        </button>
+        <button type="button" onClick={() => setAdminTab("contents")}>
+          <FileText size={17} />
+          <span><strong>{contents.length}</strong> 内容条目</span>
+        </button>
+        <button type="button" onClick={() => setAdminTab("charts")}>
+          <BarChart3 size={17} />
+          <span><strong>{charts.length}</strong> 图表配置</span>
+        </button>
+      </section>
 
       {adminTab === "overview" && (
         <section className="content-grid two">
@@ -2604,7 +2711,7 @@ function AdminView() {
           <div className="surface">
             <SectionTitle icon={Database} title="最新抓取候选" />
             <div className="queue-list">
-              {candidates.slice(0, 5).map((candidate) => (
+              {pendingCandidates.slice(0, 5).map((candidate) => (
                 <div className="queue-item" key={candidate.id}>
                   <div>
                     <strong>{candidate.title}</strong>
@@ -2613,7 +2720,7 @@ function AdminView() {
                   <StatusPill status={candidate.reviewStatus} />
                 </div>
               ))}
-              {candidates.length === 0 && <div className="empty-state">暂无抓取候选</div>}
+              {pendingCandidates.length === 0 && <div className="empty-state">暂无待审核抓取候选</div>}
             </div>
           </div>
         </section>
@@ -2622,13 +2729,21 @@ function AdminView() {
       {adminTab === "users" && (
         <section className="surface">
           <SectionTitle icon={Users} title="学生用户管理" />
+          <div className="admin-filter-bar">
+            <input
+              value={studentKeyword}
+              placeholder="按邮箱、姓名、学号、学院、专业或状态搜索"
+              onChange={(event) => setStudentKeyword(event.target.value)}
+            />
+            <span>{visibleStudents.length} / {students.length} 人</span>
+          </div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr><th>账号</th><th>认证信息</th><th>状态</th><th>登录异常</th><th>操作</th></tr>
               </thead>
               <tbody>
-                {students.map((student) => (
+                {visibleStudents.map((student) => (
                   <tr key={student.id}>
                     <td>{student.email}<br /><small>{student.nickname || "未设置昵称"} · 创建 {formatAdminTime(student.createdAt)}</small></td>
                     <td>{student.name || "未填写"} · {student.studentNo || "未填写"}<br /><small>{student.college || "未填写"} / {student.major || "未填写"} · 最近登录 {formatAdminTime(student.lastLoginAt)}</small></td>
@@ -2643,6 +2758,11 @@ function AdminView() {
                     </td>
                   </tr>
                 ))}
+                {visibleStudents.length === 0 && (
+                  <tr>
+                    <td colSpan={5}>没有匹配的学生账号</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -2652,43 +2772,63 @@ function AdminView() {
       {adminTab === "contents" && (
         <section className="content-grid two">
           <div className="surface">
-            <SectionTitle icon={FileText} title="内容维护" />
+            <SectionTitle icon={FileText} title={contentForm.id ? "编辑内容" : "新增内容"} action="新建" onAction={newContent} />
             <div className="form-grid compact-form">
-              {[
-                ["标题", "title"],
-                ["分类", "category"],
-                ["摘要", "summary"],
-                ["来源", "sourceName"],
-                ["标签", "tags"],
-                ["展示位", "displayPosition"],
-                ["状态", "status"]
-              ].map(([label, key]) => (
-                <label key={key}>
-                  <span>{label}</span>
-                  <input value={String(contentForm[key as keyof typeof contentForm])} onChange={(event) => setContentForm({ ...contentForm, [key]: event.target.value })} />
-                </label>
-              ))}
+              <label><span>标题</span><input value={contentForm.title} onChange={(event) => setContentForm({ ...contentForm, title: event.target.value })} /></label>
+              <label>
+                <span>分类</span>
+                <select value={contentForm.category} onChange={(event) => setContentForm({ ...contentForm, category: event.target.value })}>
+                  {["公告", "FAQ", "考公", "考研", "就业"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <label><span>摘要</span><input value={contentForm.summary} onChange={(event) => setContentForm({ ...contentForm, summary: event.target.value })} /></label>
+              <label><span>来源</span><input value={contentForm.sourceName} onChange={(event) => setContentForm({ ...contentForm, sourceName: event.target.value })} /></label>
+              <label><span>来源链接</span><input value={contentForm.sourceUrl} onChange={(event) => setContentForm({ ...contentForm, sourceUrl: event.target.value })} /></label>
+              <label><span>标签</span><input value={contentForm.tags} onChange={(event) => setContentForm({ ...contentForm, tags: event.target.value })} /></label>
+              <label>
+                <span>展示位</span>
+                <select value={contentForm.displayPosition} onChange={(event) => setContentForm({ ...contentForm, displayPosition: event.target.value })}>
+                  {["首页", "路径页", "图表中心", "社区"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>状态</span>
+                <select value={contentForm.status} onChange={(event) => setContentForm({ ...contentForm, status: event.target.value })}>
+                  {["待审核", "已发布", "已下架"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
               <label>
                 <span>排序</span>
                 <input type="number" value={contentForm.sortOrder} onChange={(event) => setContentForm({ ...contentForm, sortOrder: Number(event.target.value) })} />
               </label>
             </div>
-            <textarea value={contentForm.body} onChange={(event) => setContentForm({ ...contentForm, body: event.target.value })} />
+            <label>
+              <span>正文</span>
+              <textarea value={contentForm.body} onChange={(event) => setContentForm({ ...contentForm, body: event.target.value })} />
+            </label>
             <button className="primary-button" onClick={saveContent} disabled={adminWorking}>{busyLabel("save-content", "保存内容")}</button>
           </div>
           <div className="surface">
             <SectionTitle icon={FileText} title="已维护内容" />
+            <div className="admin-filter-bar">
+              <input value={contentKeyword} placeholder="搜索标题、分类、来源或状态" onChange={(event) => setContentKeyword(event.target.value)} />
+              <span>{visibleContents.length} / {contents.length} 条</span>
+            </div>
             <div className="queue-list">
-              {contents.map((content) => (
+              {visibleContents.map((content) => (
                 <div className="queue-item" key={content.id}>
                   <div>
                     <strong>{content.title}</strong>
-                    <span>{content.category} · {content.source} · 更新 {formatAdminTime(content.updatedAt)}</span>
+                    <span>{content.category} · {content.source} · {content.displayPosition || "未设置展示位"} · 更新 {formatAdminTime(content.updatedAt)}</span>
+                    <small>{content.summary}</small>
                   </div>
-                  <StatusPill status={content.status} />
+                  <div className="button-row compact-actions">
+                    <StatusPill status={content.status} />
+                    <button className="secondary-button" onClick={() => editContent(content)}>编辑</button>
+                  </div>
                 </div>
               ))}
-              {contents.length === 0 && <div className="empty-state">暂无内容</div>}
+              {visibleContents.length === 0 && <div className="empty-state">暂无匹配内容</div>}
             </div>
           </div>
         </section>
@@ -2698,8 +2838,18 @@ function AdminView() {
         <section className="content-grid two">
           <div className="surface">
             <SectionTitle icon={ShieldCheck} title="社区内容审核" />
+            <div className="admin-filter-bar">
+              <div className="mini-segmented">
+                {["待审核", "已通过", "已驳回", "已下架", "精选", "全部"].map((status) => (
+                  <button type="button" key={status} className={postReviewStatus === status ? "active" : ""} onClick={() => setPostReviewStatus(status)}>
+                    {status}
+                  </button>
+                ))}
+              </div>
+              <span>{visibleReviewPosts.length} 条</span>
+            </div>
             <div className="queue-list">
-              {posts.slice(0, 10).map((post) => (
+              {visibleReviewPosts.slice(0, 20).map((post) => (
                 <div className="queue-item" key={post.id}>
                   <div>
                     <strong>{post.title}</strong>
@@ -2713,6 +2863,7 @@ function AdminView() {
                   </div>
                 </div>
               ))}
+              {visibleReviewPosts.length === 0 && <div className="empty-state">暂无该状态的社区内容</div>}
             </div>
           </div>
           <div className="surface">
@@ -2739,61 +2890,103 @@ function AdminView() {
       {adminTab === "sources" && (
         <section className="content-grid two">
           <div className="surface">
-            <SectionTitle icon={Database} title="数据源维护" />
+            <SectionTitle icon={Database} title={sourceForm.id ? "编辑数据源" : "新增数据源"} action="新建" onAction={newSource} />
             <div className="form-grid compact-form">
-              {[
-                ["来源名称", "name"],
-                ["来源地址", "url"],
-                ["来源类型", "type"],
-                ["适用路径", "path"],
-                ["抓取频率", "frequency"],
-                ["可信级别", "trustLevel"]
-              ].map(([label, key]) => (
-                <label key={key}>
-                  <span>{label}</span>
-                  <input value={sourceForm[key as keyof typeof sourceForm]} onChange={(event) => setSourceForm({ ...sourceForm, [key]: event.target.value })} />
-                </label>
-              ))}
+              <label><span>来源名称</span><input value={sourceForm.name} onChange={(event) => setSourceForm({ ...sourceForm, name: event.target.value })} /></label>
+              <label><span>来源地址</span><input value={sourceForm.url} onChange={(event) => setSourceForm({ ...sourceForm, url: event.target.value })} /></label>
+              <label>
+                <span>来源类型</span>
+                <select value={sourceForm.type} onChange={(event) => setSourceForm({ ...sourceForm, type: event.target.value })}>
+                  {["公开权威数据", "政策公告", "学校就业信息", "考试招生", "招聘服务"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>适用路径</span>
+                <select value={sourceForm.path} onChange={(event) => setSourceForm({ ...sourceForm, path: event.target.value })}>
+                  {["就业", "考公", "考研"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>抓取频率</span>
+                <select value={sourceForm.frequency} onChange={(event) => setSourceForm({ ...sourceForm, frequency: event.target.value })}>
+                  {["每日", "每周", "每月", "手动"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>可信级别</span>
+                <select value={sourceForm.trustLevel} onChange={(event) => setSourceForm({ ...sourceForm, trustLevel: event.target.value })}>
+                  {["高", "中", "低"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>状态</span>
+                <select value={sourceForm.status} onChange={(event) => setSourceForm({ ...sourceForm, status: event.target.value })}>
+                  {["启用", "停用"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
             </div>
             <div className="button-row">
               <button className="primary-button" onClick={saveSource} disabled={adminWorking}>{busyLabel("save-source", "保存数据源")}</button>
             </div>
-          </div>
-          <div className="surface">
-            <SectionTitle icon={RefreshCcw} title="抓取与候选审核" />
-            <div className="queue-list">
-              {sources.map((source) => (
+            <div className="admin-filter-bar source-filter">
+              <input value={sourceKeyword} placeholder="搜索数据源名称、路径、状态或 URL" onChange={(event) => setSourceKeyword(event.target.value)} />
+              <span>{visibleSources.length} / {sources.length} 个数据源</span>
+            </div>
+            <div className="queue-list admin-source-list">
+              {visibleSources.map((source) => (
                 <div className="queue-item" key={source.id}>
                   <div>
                     <strong>{source.name}</strong>
-                    <span>{source.path} · 抓取 {formatAdminTime(source.lastRunAt)} · 配置 {formatAdminTime(source.updatedAt)} · 通过率 {source.passRate}</span>
+                    <span>{source.path} · {source.type} · {source.status} · 通过率 {source.passRate}</span>
                     <small>
                       最近任务：{source.lastTaskStatus || "暂无"} · {formatAdminTime(source.lastTaskAt)}
                       {source.lastTaskMessage ? ` · ${source.lastTaskMessage}` : ""}
                     </small>
                   </div>
-                  <button className="icon-button" title="手动抓取" onClick={() => triggerCrawl(source.id)} disabled={adminWorking}>
-                    <RefreshCcw size={17} />
-                  </button>
+                  <div className="button-row compact-actions">
+                    <button className="icon-button" title="手动抓取" onClick={() => triggerCrawl(source.id)} disabled={adminWorking}>
+                      <RefreshCcw size={17} />
+                    </button>
+                    <button className="secondary-button" onClick={() => editSource(source)}>编辑</button>
+                  </div>
                 </div>
               ))}
-              {candidates.slice(0, 8).map((candidate) => (
+              {visibleSources.length === 0 && <div className="empty-state">暂无匹配数据源</div>}
+            </div>
+          </div>
+          <div className="surface">
+            <SectionTitle icon={RefreshCcw} title="抓取与候选审核" />
+            <div className="admin-filter-bar">
+              <div className="mini-segmented">
+                {["待审核", "已发布", "已驳回", "全部"].map((status) => (
+                  <button type="button" key={status} className={candidateStatus === status ? "active" : ""} onClick={() => setCandidateStatus(status)}>
+                    {status}
+                  </button>
+                ))}
+              </div>
+              <input value={candidateKeyword} placeholder="搜索标题、来源、路径或标签" onChange={(event) => setCandidateKeyword(event.target.value)} />
+            </div>
+            <div className="queue-list">
+              {visibleCandidates.map((candidate) => (
                 <div className="queue-item" key={`candidate-${candidate.id}`}>
                   <div>
                     <strong>{candidate.title}</strong>
                     <span>{candidate.sourceName} · {candidate.path} · 质量 {candidate.qualityScore ?? 0} · {candidate.reviewStatus} · 抓取 {formatAdminTime(candidate.crawledAt)}</span>
                     <p>{candidate.summary}</p>
                     {candidate.reason && <small>{candidate.reason}</small>}
+                    {candidate.failureReason && <small>驳回原因：{candidate.failureReason}</small>}
                   </div>
                   <div className="button-row compact-actions">
                     <button className="icon-button" title="查看来源" onClick={() => window.open(candidate.rawUrl, "_blank", "noopener,noreferrer")}>
                       <ExternalLink size={16} />
                     </button>
-                    <button className="secondary-button" onClick={() => reviewCandidate(candidate.id, "发布", candidate)} disabled={adminWorking}>{busyLabel(`candidate-${candidate.id}-发布`, "发布")}</button>
-                    <button className="secondary-button" onClick={() => reviewCandidate(candidate.id, "驳回")} disabled={adminWorking}>{busyLabel(`candidate-${candidate.id}-驳回`, "驳回")}</button>
+                    <StatusPill status={candidate.reviewStatus} />
+                    <button className="secondary-button" onClick={() => reviewCandidate(candidate.id, "发布", candidate)} disabled={adminWorking || candidate.reviewStatus === "已发布"}>{busyLabel(`candidate-${candidate.id}-发布`, "发布")}</button>
+                    <button className="secondary-button danger-button" onClick={() => reviewCandidate(candidate.id, "驳回")} disabled={adminWorking || candidate.reviewStatus === "已驳回"}>{busyLabel(`candidate-${candidate.id}-驳回`, "驳回")}</button>
                   </div>
                 </div>
               ))}
+              {visibleCandidates.length === 0 && <div className="empty-state">暂无匹配的抓取候选</div>}
             </div>
           </div>
         </section>
@@ -2971,11 +3164,21 @@ function AdminView() {
       {adminTab === "tags" && (
         <section className="content-grid two">
           <div className="surface">
-            <SectionTitle icon={SlidersHorizontal} title="标签维护" />
+            <SectionTitle icon={SlidersHorizontal} title={tagForm.id ? "编辑标签" : "新增标签"} action="新建" onAction={newTag} />
             <div className="form-grid compact-form">
               <label><span>标签名</span><input value={tagForm.name} onChange={(event) => setTagForm({ ...tagForm, name: event.target.value })} /></label>
-              <label><span>类型</span><input value={tagForm.type} onChange={(event) => setTagForm({ ...tagForm, type: event.target.value })} /></label>
-              <label><span>状态</span><input value={tagForm.status} onChange={(event) => setTagForm({ ...tagForm, status: event.target.value })} /></label>
+              <label>
+                <span>类型</span>
+                <select value={tagForm.type} onChange={(event) => setTagForm({ ...tagForm, type: event.target.value })}>
+                  {["内容标签", "路径标签", "学院标签", "专业标签"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>状态</span>
+                <select value={tagForm.status} onChange={(event) => setTagForm({ ...tagForm, status: event.target.value })}>
+                  {["启用", "停用"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
               <label><span>排序</span><input type="number" value={tagForm.sortOrder} onChange={(event) => setTagForm({ ...tagForm, sortOrder: Number(event.target.value) })} /></label>
             </div>
             <div className="button-row">
@@ -2984,9 +3187,18 @@ function AdminView() {
           </div>
           <div className="surface">
             <SectionTitle icon={SlidersHorizontal} title="统一标签" />
-            <div className="config-grid">
+            <div className="queue-list">
               {tags.map((tag) => (
-                <div className="config-item" key={tag.id}>{tag.type} · {tag.name} · {tag.status} · 创建 {formatAdminTime(tag.createdAt)}</div>
+                <div className="queue-item" key={tag.id}>
+                  <div>
+                    <strong>{tag.name}</strong>
+                    <span>{tag.type} · 排序 {tag.sortOrder} · 创建 {formatAdminTime(tag.createdAt)}</span>
+                  </div>
+                  <div className="button-row compact-actions">
+                    <StatusPill status={tag.status} />
+                    <button className="secondary-button" onClick={() => setTagForm({ id: tag.id, name: tag.name, type: tag.type, status: tag.status, sortOrder: tag.sortOrder })}>编辑</button>
+                  </div>
+                </div>
               ))}
             </div>
           </div>
@@ -2996,12 +3208,22 @@ function AdminView() {
       {adminTab === "ai" && (
         <section className="content-grid two">
           <div className="surface">
-            <SectionTitle icon={Bot} title="AI 与模板配置" />
+            <SectionTitle icon={Bot} title={aiForm.id ? "编辑 AI 配置" : "新增 AI 配置"} action="新建" onAction={newAiConfig} />
             <div className="form-grid compact-form">
-              <label><span>类型</span><input value={aiForm.configType} onChange={(event) => setAiForm({ ...aiForm, configType: event.target.value })} /></label>
+              <label>
+                <span>类型</span>
+                <select value={aiForm.configType} onChange={(event) => setAiForm({ ...aiForm, configType: event.target.value })}>
+                  {["prompt", "questionnaire", "report_template", "disclaimer"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
               <label><span>版本</span><input value={aiForm.version} onChange={(event) => setAiForm({ ...aiForm, version: event.target.value })} /></label>
               <label><span>标题</span><input value={aiForm.title} onChange={(event) => setAiForm({ ...aiForm, title: event.target.value })} /></label>
-              <label><span>状态</span><input value={aiForm.status} onChange={(event) => setAiForm({ ...aiForm, status: event.target.value })} /></label>
+              <label>
+                <span>状态</span>
+                <select value={aiForm.status} onChange={(event) => setAiForm({ ...aiForm, status: event.target.value })}>
+                  {["草稿", "已发布", "已停用"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
             </div>
             <textarea value={aiForm.content} onChange={(event) => setAiForm({ ...aiForm, content: event.target.value })} />
             <button className="primary-button" onClick={saveAiConfig} disabled={adminWorking}>{busyLabel("save-ai", "保存配置")}</button>
@@ -3015,7 +3237,10 @@ function AdminView() {
                     <strong>{config.title}</strong>
                     <span>{config.configType} · {config.version} · 创建 {formatAdminTime(config.createdAt)}{config.publishedAt ? ` · 发布 ${formatAdminTime(config.publishedAt)}` : ""}</span>
                   </div>
-                  <StatusPill status={config.status} />
+                  <div className="button-row compact-actions">
+                    <StatusPill status={config.status} />
+                    <button className="secondary-button" onClick={() => setAiForm({ id: config.id, configType: config.configType, version: config.version, title: config.title, content: config.content, status: config.status })}>编辑</button>
+                  </div>
                 </div>
               ))}
             </div>

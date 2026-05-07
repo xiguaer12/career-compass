@@ -420,6 +420,100 @@ textarea:focus-visible {
   overflow-x: auto;
 }
 
+.admin-command-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.admin-command-strip button {
+  min-height: 74px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdff;
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.admin-command-strip button:hover {
+  border-color: #bfdbfe;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+}
+
+.admin-command-strip strong {
+  display: block;
+  font-size: 24px;
+  color: var(--ink);
+}
+
+.admin-command-strip span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.admin-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.admin-filter-bar input {
+  min-width: 220px;
+  flex: 1;
+}
+
+.admin-filter-bar > span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.source-filter {
+  margin-top: 16px;
+}
+
+.admin-source-list {
+  max-height: 520px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.mini-segmented {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.mini-segmented button {
+  min-height: 30px;
+  border-radius: 6px;
+  padding: 0 10px;
+  color: #475569;
+  background: transparent;
+  font-size: 13px;
+}
+
+.mini-segmented button.active {
+  color: white;
+  background: var(--ink);
+}
+
+.danger-button {
+  color: #b91c1c;
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+
 .helper-text,
 .empty-state {
   margin: 0;
@@ -1628,6 +1722,7 @@ th {
   }
 
   .metric-grid,
+  .admin-command-strip,
   .content-grid.three {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1720,6 +1815,7 @@ th {
   }
 
   .metric-grid,
+  .admin-command-strip,
   .content-grid.two,
   .content-grid.three,
   .path-news-layout,
@@ -1729,6 +1825,20 @@ th {
   .config-grid,
   .comment-box {
     grid-template-columns: 1fr;
+  }
+
+  .admin-filter-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-filter-bar input,
+  .mini-segmented {
+    width: 100%;
+  }
+
+  .mini-segmented {
+    overflow-x: auto;
   }
 
   .score-row {

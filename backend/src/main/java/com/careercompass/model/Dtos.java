@@ -61,9 +61,13 @@ public final class Dtos {
       long id,
       String title,
       String category,
+      String body,
       String summary,
       String source,
       String sourceUrl,
+      String tags,
+      String displayPosition,
+      int sortOrder,
       String updatedAt,
       String status
   ) {}
@@ -292,6 +296,7 @@ public final class Dtos {
       String type,
       String path,
       String frequency,
+      String trustLevel,
       String status,
       String lastRunAt,
       String passRate,

@@ -1271,6 +1271,7 @@ public class CompassService {
               rs.getString("source_type"),
               rs.getString("path"),
               rs.getString("crawl_frequency"),
+              rs.getString("trust_level"),
               rs.getString("status"),
               toInstantString(rs.getTimestamp("last_crawl_at")),
               passRate,
@@ -1366,12 +1367,32 @@ public class CompassService {
     if (rows.isEmpty()) throw new IllegalArgumentException("抓取候选不存在");
     Map<String, Object> row = rows.getFirst();
     Map<String, Object> parsed = jsonToMap(String.valueOf(row.get("parsed_json")));
-    String action = request.action();
-    if ("驳回".equals(action)) {
+    String action = request.action().trim();
+    boolean rejectAction = "驳回".equals(action) || "已驳回".equals(action) || "reject".equalsIgnoreCase(action);
+    if (rejectAction) {
       if (!StringUtils.hasText(request.reason())) throw new IllegalArgumentException("驳回必须填写原因");
-      jdbc.update("update crawl_candidate set review_status = '已驳回', failure_reason = ? where id = ?", request.reason(), request.id());
-      audit("admin", "REJECT_CRAWL_CANDIDATE", "crawl_candidate", String.valueOf(request.id()), Map.of("reason", request.reason()));
-      return Map.of("id", request.id(), "status", "已驳回");
+      String rawUrl = String.valueOf(row.get("raw_url"));
+      int offlineCount = jdbc.update(
+          """
+          update content_info
+          set status = '已下架', offline_at = current_timestamp, updated_at = current_timestamp
+          where source_url = ? and status = '已发布'
+          """,
+          rawUrl
+      );
+      jdbc.update(
+          "update crawl_candidate set review_status = '已驳回', failure_reason = ?, published_at = null where id = ?",
+          request.reason(),
+          request.id()
+      );
+      audit(
+          "admin",
+          "REJECT_CRAWL_CANDIDATE",
+          "crawl_candidate",
+          String.valueOf(request.id()),
+          Map.of("reason", request.reason(), "offlineContentCount", offlineCount, "rawUrl", rawUrl)
+      );
+      return Map.of("id", request.id(), "status", "已驳回", "offlineContentCount", offlineCount);
     }
     if ("重新抓取".equals(action)) {
       return triggerCrawl(((Number) row.get("source_id")).longValue());
@@ -2952,9 +2973,13 @@ public class CompassService {
         rs.getLong("id"),
         rs.getString("title"),
         rs.getString("category"),
+        rs.getString("body"),
         rs.getString("summary"),
         rs.getString("source_name"),
         rs.getString("source_url"),
+        rs.getString("tags"),
+        rs.getString("display_position"),
+        rs.getInt("sort_order"),
         toInstantString(rs.getTimestamp("updated_at")),
         rs.getString("status")
     );
