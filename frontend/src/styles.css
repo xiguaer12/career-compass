@@ -455,6 +455,10 @@ textarea:focus-visible {
   position: relative;
 }
 
+.home-intro-panel {
+  align-items: stretch;
+}
+
 .hero-copy {
   display: flex;
   flex-direction: column;
@@ -475,77 +479,149 @@ textarea:focus-visible {
   max-width: 640px;
 }
 
-.compass-visual {
+.home-next-card {
   min-height: 300px;
-  display: grid;
-  place-items: center;
-  background:
-    linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(15, 118, 110, 0.09)),
-    repeating-linear-gradient(45deg, rgba(15, 23, 42, 0.05) 0 1px, transparent 1px 18px);
   border: 1px solid #d5e0eb;
   border-radius: 8px;
-}
-
-.compass-ring {
-  width: min(310px, 72vw);
-  aspect-ratio: 1;
-  border-radius: 50%;
-  position: relative;
-  border: 1px solid rgba(15, 23, 42, 0.18);
   background:
-    radial-gradient(circle, rgba(255, 255, 255, 0.96) 0 31%, transparent 32%),
-    conic-gradient(from 90deg, rgba(37, 99, 235, 0.2), rgba(15, 118, 110, 0.2), rgba(180, 83, 9, 0.22), rgba(37, 99, 235, 0.2));
-}
-
-.compass-core {
-  position: absolute;
-  inset: 33%;
-  border-radius: 50%;
-  background: white;
+    linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(15, 118, 110, 0.07)),
+    #fbfdff;
+  padding: 20px;
   display: grid;
-  place-items: center;
-  text-align: center;
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+  gap: 16px;
+  align-content: start;
 }
 
-.compass-core strong {
-  font-size: 42px;
-  line-height: 1;
+.home-next-header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.35);
 }
 
-.compass-core span {
+.home-next-header strong,
+.home-capability-card strong,
+.home-path-card strong,
+.home-step-item strong {
+  display: block;
+  color: var(--ink);
+}
+
+.home-next-header span,
+.home-step-item small,
+.home-path-card p,
+.home-capability-card p {
   color: var(--muted);
-  font-size: 12px;
 }
 
-.orbit {
-  position: absolute;
-  inset: 14px;
+.home-step-list {
+  display: grid;
+  gap: 10px;
 }
 
-.orbit span {
-  position: absolute;
-  color: white;
+.home-step-item {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.84);
+  padding: 12px;
+  display: grid;
+  grid-template-columns: 28px 22px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.home-step-item:hover {
+  transform: translateY(-1px);
+  border-color: rgba(37, 99, 235, 0.35);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+}
+
+.home-step-item b {
+  color: var(--blue);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.home-step-index {
+  width: 28px;
+  height: 28px;
   border-radius: 999px;
-  padding: 7px 10px;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  background: var(--ink);
+  font-size: 13px;
   font-weight: 800;
 }
 
-.orbit-1 span {
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
+.home-capability-grid {
+  align-items: stretch;
 }
 
-.orbit-2 span {
-  left: 8px;
-  top: 60%;
+.home-capability-card {
+  min-height: 150px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  display: grid;
+  gap: 10px;
+  align-content: start;
 }
 
-.orbit-3 span {
-  right: 8px;
-  top: 60%;
+.home-capability-card p,
+.home-path-card p {
+  margin: 0;
+}
+
+.home-guide-layout {
+  align-items: start;
+}
+
+.home-path-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.home-path-card {
+  min-height: 116px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-left: 4px solid;
+  border-radius: 8px;
+  background: #fbfdff;
+  display: grid;
+  gap: 12px;
+}
+
+.home-path-card strong {
+  font-size: 20px;
+}
+
+.home-path-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.home-path-tags span {
+  border-radius: 999px;
+  background: #edf2f7;
+  color: #334155;
+  padding: 6px 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.home-use-card .notice-item strong {
+  display: block;
+  margin-bottom: 4px;
 }
 
 .metric-grid {
@@ -1633,6 +1709,14 @@ th {
 
   .hero-copy h2 {
     font-size: 32px;
+  }
+
+  .home-step-item {
+    grid-template-columns: 28px 22px minmax(0, 1fr);
+  }
+
+  .home-step-item b {
+    grid-column: 3;
   }
 
   .metric-grid,

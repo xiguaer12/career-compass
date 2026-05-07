@@ -77,7 +77,6 @@ import {
   type AiReport,
   type CrawlSource,
   type Dashboard,
-  type HomePayload,
   type InterviewMessage,
   type MessageItem,
   type PathConfigItem,
@@ -300,13 +299,6 @@ const compactStats = [
   { key: "pendingReviews", label: "待审核项", value: "—", trend: "等待数据库", icon: Clock3 }
 ];
 
-const metricIconMap = {
-  registeredStudents: Users,
-  completionRate: CheckCircle2,
-  reportCount: FileText,
-  pendingReviews: Clock3
-};
-
 function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("home");
   const [apiStatus, setApiStatus] = useState<"checking" | "up" | "down">("checking");
@@ -435,7 +427,7 @@ function App() {
         />
         {notice && <div className="toast">{notice}</div>}
         {authOpen && <AuthPanel onClose={() => setAuthOpen(false)} onSession={saveSession} />}
-        {activeTab === "home" && <HomeView report={report} />}
+        {activeTab === "home" && <HomeView report={report} onNavigate={setActiveTab} />}
         {activeTab === "workspace" && <WorkspaceView session={session} onLogin={() => setAuthOpen(true)} onReport={setReport} onTask={updateReportTask} setNotice={setNotice} />}
         {activeTab === "report" && <ReportView report={report} task={reportTask} session={session} onLogin={() => setAuthOpen(true)} onReport={setReport} onTask={updateReportTask} />}
         {activeTab === "paths" && (
@@ -634,15 +626,11 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
   );
 }
 
-function HomeView({ report }: { report: AiReport | null }) {
-  const [home, setHome] = useState<HomePayload | null>(null);
+function HomeView({ report, onNavigate }: { report: AiReport | null; onNavigate: (tab: TabKey) => void }) {
   const [homePaths, setHomePaths] = useState<PathInfo[]>([]);
   const [homeError, setHomeError] = useState("");
 
   useEffect(() => {
-    publicApi.home().then(setHome).catch((exception) => {
-      setHomeError(exception instanceof Error ? exception.message : "首页数据加载失败");
-    });
     publicApi.paths()
       .then((pages) => setHomePaths(pages.map(pathPageToInfo)))
       .catch((exception) => {
@@ -650,163 +638,132 @@ function HomeView({ report }: { report: AiReport | null }) {
       });
   }, []);
 
-  const primaryChart = home?.charts.find((chart) => chart.displayPosition === "首页")
-    || home?.charts.find((chart) => chart.chartType.includes("趋势"))
-    || home?.charts[0];
-  const primaryChartRows = Array.isArray(primaryChart?.data?.rows)
-    ? primaryChart.data.rows as Array<Record<string, unknown>>
-    : [];
-  const stats = home?.metrics?.length
-    ? home.metrics.map((metric) => ({
-        ...metric,
-        icon: metricIconMap[metric.key as keyof typeof metricIconMap] || Users
-      }))
-    : compactStats;
-  const featuredPosts = home?.featuredPosts?.length
-    ? home.featuredPosts
-    : [];
-  const noticeItems = home?.notices?.length
-    ? home.notices.map((item) => ({ key: `notice-${item.id}`, title: item.title, summary: item.summary }))
-    : [
-        { key: "notice-local-1", title: "完成基础档案后可进入深度问卷", summary: "问卷和报告会保存到个人账号。" },
-        { key: "notice-local-2", title: "公开权威数据先审核后发布", summary: "所有抓取候选均需管理员确认。" }
-      ];
-  const faqItems = home?.faqs?.length
-    ? home.faqs.map((item) => ({ key: `faq-${item.id}`, title: item.title, summary: item.summary }))
-    : [
-        { key: "faq-local-1", title: "问卷草稿会保存多久？", summary: "草稿会保留最近一次填写进度。" },
-        { key: "faq-local-2", title: "AI 报告能替我做决定吗？", summary: "仅供辅助决策，不替代最终选择。" }
-      ];
-  const latestChartRow = primaryChartRows.length
-    ? primaryChartRows[primaryChartRows.length - 1] as Record<string, unknown>
-    : {};
   const displayHomePaths = homePaths.map((path) => ({
     ...path,
     match: reportScoreForPath(report, path.name) ?? path.match
   }));
-  const reportCompassItems = report?.scores?.length
-    ? report.scores.map((score) => ({
-        name: score.path,
-        color: pathColor(score.path),
-        score: score.score
-      }))
+  const topScore = report?.scores?.length
+    ? [...report.scores].sort((a, b) => b.score - a.score)[0]
     : null;
-  const compassItems = reportCompassItems ?? displayHomePaths.map((item) => ({
-    name: item.name,
-    color: item.accent,
-    score: Number(latestChartRow[item.name] || item.match || 0)
-  }));
-  const strongestCompass = compassItems.reduce(
-    (best, item) => item.score > best.score ? item : best,
-    compassItems[0] || { name: "", color: "#172033", score: 0 }
-  );
-  const strongestCompassValue = strongestCompass && strongestCompass.score > 0
-    ? strongestCompass.score.toFixed(Number.isInteger(strongestCompass.score) ? 0 : 1)
-    : "—";
+  const guideSteps = [
+    {
+      icon: ClipboardList,
+      title: "完善基础档案",
+      description: "先补齐学院、专业、联系方式等必要信息，让后续访谈有基本上下文。",
+      target: "workspace" as TabKey,
+      action: "进入工作台"
+    },
+    {
+      icon: Sparkles,
+      title: "进行 AI 访谈",
+      description: "用对话替代硬填问卷，整理你的课程、实习、家庭约束和偏好。",
+      target: "workspace" as TabKey,
+      action: "开始整理"
+    },
+    {
+      icon: FileText,
+      title: "查看规划报告",
+      description: "报告会把三条路径的适配点、风险和近期行动计划放在一起。",
+      target: "report" as TabKey,
+      action: "查看报告"
+    }
+  ];
+  const capabilityItems = [
+    { icon: Bot, title: "AI 访谈", text: "通过追问和归纳，减少学生自己描述不清导致的信息缺口。" },
+    { icon: Route, title: "三路径资料", text: "集中查看考研、考公、就业的模板、资讯、图表和经验问答。" },
+    { icon: ShieldCheck, title: "后台审核", text: "资讯抓取和社区内容先进入审核，再展示给学生参考。" }
+  ];
 
   return (
     <div className="page-stack">
       {homeError && <p className="form-error">{homeError}</p>}
-      <section className="hero-panel">
+      <section className="hero-panel home-intro-panel">
         <div className="hero-copy">
-          <p className="eyebrow">三路径均衡覆盖</p>
-          <h2>把自我评估、路径比较和行动计划收进同一个工作台。</h2>
+          <p className="eyebrow">Career Compass</p>
+          <h2>面向本科应届毕业生的三路径规划平台。</h2>
           <p>
-            面向本校本科应届毕业生，围绕考公、考研、就业完成从测评到社区经验参考的闭环。
+            平台围绕考研、考公、就业三个方向，把基础档案、AI 访谈、规划报告、资料模板、真实资讯和社区经验整合在一起，帮助学生更早看清选择条件和下一步行动。
           </p>
-        </div>
-        <div className="compass-visual" aria-label="路径匹配概览">
-          <div className="compass-ring">
-            {compassItems.map((item, index) => (
-              <div className={`orbit orbit-${index + 1}`} key={item.name}>
-                <span style={{ background: item.color }}>{item.name}</span>
-              </div>
-            ))}
-            <div className="compass-core">
-              <Compass size={34} />
-              <strong>{strongestCompassValue}</strong>
-              <span>{reportCompassItems ? "个人最高匹配" : "最新最高占比"}</span>
-            </div>
+          <div className="hero-actions">
+            <button type="button" className="primary-button" onClick={() => onNavigate("workspace")}>
+              <ClipboardList size={17} />
+              完善基础档案
+            </button>
+            <button type="button" className="secondary-button" onClick={() => onNavigate("paths")}>
+              <Route size={17} />
+              查看三路径资料
+            </button>
           </div>
         </div>
+        <aside className="home-next-card" aria-label="推荐开始方式">
+          <div className="home-next-header">
+            <Compass size={24} />
+            <div>
+              <strong>{topScore ? `${topScore.path} ${topScore.score}` : "先建立你的规划上下文"}</strong>
+              <span>{topScore ? "当前报告中的最高匹配方向" : "从基础档案和 AI 访谈开始"}</span>
+            </div>
+          </div>
+          <div className="home-step-list">
+            {guideSteps.map((step, index) => {
+              const Icon = step.icon;
+              return (
+                <button type="button" className="home-step-item" key={step.title} onClick={() => onNavigate(step.target)}>
+                  <span className="home-step-index">{index + 1}</span>
+                  <Icon size={18} />
+                  <span>
+                    <strong>{step.title}</strong>
+                    <small>{step.description}</small>
+                  </span>
+                  <b>{step.action}</b>
+                </button>
+              );
+            })}
+          </div>
+        </aside>
       </section>
 
-      <section className="metric-grid">
-        {stats.map((stat) => {
-          const Icon = stat.icon;
+      <section className="content-grid three home-capability-grid">
+        {capabilityItems.map((item) => {
+          const Icon = item.icon;
           return (
-            <article className="metric-card" key={stat.label}>
+            <article className="home-capability-card" key={item.title}>
               <div className="metric-icon">
                 <Icon size={19} />
               </div>
-              <span>{stat.label}</span>
-              <strong>{stat.value}</strong>
-              <em>{stat.trend}</em>
+              <strong>{item.title}</strong>
+              <p>{item.text}</p>
             </article>
           );
         })}
       </section>
 
-      <section className="content-grid two">
+      <section className="content-grid split home-guide-layout">
         <div className="surface">
-          <SectionTitle icon={Route} title="三路径入口" />
-          <div className="path-strip">
+          <SectionTitle icon={Route} title="三条路径怎么用" />
+          <div className="home-path-grid">
             {displayHomePaths.map((path) => (
-              <PathMiniCard key={path.key} path={path} />
+              <HomePathIntroCard key={path.key} path={path} />
             ))}
-            {displayHomePaths.length === 0 && <div className="empty-state">路径配置加载中，后台启用后会展示在这里。</div>}
-          </div>
-        </div>
-        <div className="surface">
-          <SectionTitle icon={BarChart3} title="热门图表" />
-          <div className="chart-box compact">
-            {primaryChartRows.length > 0 ? (
-              <ResponsiveContainer width="100%" height={220}>
-                <AreaChart data={primaryChartRows} margin={{ top: 12, right: 12, left: -18, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="employmentArea" x1="0" x2="0" y1="0" y2="1">
-                      <stop offset="5%" stopColor="#b45309" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="#b45309" stopOpacity={0.02} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid stroke="#e5e7eb" strokeDasharray="4 4" />
-                  <XAxis dataKey="year" />
-                  <YAxis />
-                  <Tooltip />
-                  <Area type="monotone" dataKey="就业" stroke="#b45309" fill="url(#employmentArea)" strokeWidth={2} />
-                  <Line type="monotone" dataKey="考研" stroke="#0f766e" strokeWidth={2} />
-                  <Line type="monotone" dataKey="考公" stroke="#2563eb" strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="empty-state">暂无已发布趋势图，请在后台图表维护中发布。</div>
+            {displayHomePaths.length === 0 && (
+              <div className="empty-state">路径配置加载中，后台启用后会在这里展示考研、考公、就业的入口说明。</div>
             )}
           </div>
-          <p className="source-line">
-            {primaryChart ? `${primaryChart.title} · ${primaryChart.chartType} · 来源：${primaryChart.sourceName}；口径：${primaryChart.methodology}；更新：${primaryChart.updatedAt}` : "等待后台发布首页图表"}
-          </p>
-          <div className="config-grid compact-config">
-            {(home?.charts || []).slice(0, 3).map((chart) => (
-              <div className="config-item" key={chart.id}>{chart.title} · {chart.chartType}</div>
-            ))}
-          </div>
         </div>
-      </section>
-
-      <section className="content-grid two">
-        <div className="surface">
-          <SectionTitle icon={MessagesSquare} title="精选经验与问答" />
-          <PostList posts={featuredPosts} />
-        </div>
-        <div className="surface">
-          <SectionTitle icon={Flag} title="公告与 FAQ" />
+        <div className="surface home-use-card">
+          <SectionTitle icon={Flag} title="建议使用顺序" />
           <div className="notice-list">
-            {[...noticeItems, ...faqItems].map((notice) => (
-              <div className="notice-item" key={notice.key}>
-                <CheckCircle2 size={16} />
-                <span><strong>{notice.title}</strong>{notice.summary}</span>
-              </div>
-            ))}
+            <div className="notice-item">
+              <CheckCircle2 size={16} />
+              <span><strong>先补基础信息</strong>学号、学院、专业等信息用于绑定个人档案。</span>
+            </div>
+            <div className="notice-item">
+              <CheckCircle2 size={16} />
+              <span><strong>再做 AI 访谈</strong>把不确定、说不清的想法交给 AI 帮你整理。</span>
+            </div>
+            <div className="notice-item">
+              <CheckCircle2 size={16} />
+              <span><strong>最后查资料验证</strong>用三路径资料、图表和社区经验补足信息差。</span>
+            </div>
           </div>
         </div>
       </section>
@@ -3346,6 +3303,22 @@ function PathMiniCard({ path }: { path: PathInfo }) {
       <div className="mini-score">
         <b>{path.match}</b>
         <small>匹配度</small>
+      </div>
+    </article>
+  );
+}
+
+function HomePathIntroCard({ path }: { path: PathInfo }) {
+  return (
+    <article className="home-path-card" style={{ borderLeftColor: path.accent }}>
+      <div>
+        <strong>{path.name}</strong>
+        <p>{path.subtitle}</p>
+      </div>
+      <div className="home-path-tags">
+        {(path.suitable.length ? path.suitable : ["资料模板", "资讯图表", "经验问答"]).slice(0, 3).map((item) => (
+          <span key={item}>{item}</span>
+        ))}
       </div>
     </article>
   );
