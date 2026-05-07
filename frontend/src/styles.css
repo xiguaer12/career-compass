@@ -1222,7 +1222,16 @@ th {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 16px;
-  padding: 16px;
+  padding: 18px;
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.post-item.clickable-row:hover,
+.post-item.clickable-row:focus-within {
+  border-color: rgba(37, 99, 235, 0.34);
+  background: #ffffff;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
 }
 
 .post-meta {
@@ -1245,12 +1254,31 @@ th {
 
 .post-main h3 {
   margin: 10px 0 8px;
-  font-size: 17px;
+  font-size: 18px;
+  line-height: 1.35;
 }
 
 .post-main p {
   margin: 0 0 10px;
   color: #475569;
+  line-height: 1.7;
+}
+
+.post-main[role="button"] {
+  cursor: pointer;
+  border-radius: 8px;
+  outline: none;
+}
+
+.post-main[role="button"]:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.24);
+  outline-offset: 4px;
+}
+
+.post-actions {
+  align-self: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .status-pill {
@@ -1286,8 +1314,68 @@ th {
   min-width: 100px;
 }
 
+.community-page {
+  gap: 20px;
+}
+
+.community-composer {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 251, 255, 0.98) 58%, rgba(247, 253, 250, 0.98) 100%);
+}
+
+.community-composer-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.community-compose-fields,
+.community-compose-meta {
+  display: grid;
+  gap: 12px;
+}
+
+.community-compose-meta {
+  align-content: start;
+  border-left: 1px solid var(--line);
+  padding-left: 16px;
+}
+
+.community-body-input {
+  min-height: 176px;
+  line-height: 1.7;
+}
+
+.community-feed-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.community-feed-head > span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.community-filter-row {
+  display: grid;
+  grid-template-columns: 140px 140px 140px minmax(220px, 1fr);
+  margin-bottom: 16px;
+}
+
+.community-detail-body {
+  white-space: pre-line;
+  line-height: 1.8;
+}
+
 .community-detail h2 {
   margin: 10px 0;
+  font-size: 26px;
+  line-height: 1.28;
 }
 
 .post-editor {
@@ -1374,8 +1462,20 @@ th {
   .hero-panel,
   .content-grid.two,
   .content-grid.split,
-  .path-news-layout {
+  .path-news-layout,
+  .community-composer-layout {
     grid-template-columns: 1fr;
+  }
+
+  .community-compose-meta {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    padding-left: 0;
+    padding-top: 14px;
+  }
+
+  .community-filter-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1442,6 +1542,7 @@ th {
   .content-grid.two,
   .content-grid.three,
   .path-news-layout,
+  .community-filter-row,
   .form-grid,
   .plan-grid,
   .config-grid,

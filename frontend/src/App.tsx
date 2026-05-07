@@ -1889,6 +1889,8 @@ function CommunityView({
   const [posts, setPosts] = useState<CommunityPost[]>([]);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [composePath, setComposePath] = useState("就业");
+  const [composeType, setComposeType] = useState("问答");
   const [path, setPath] = useState("");
   const [type, setType] = useState("");
   const [keyword, setKeyword] = useState("");
@@ -1948,8 +1950,8 @@ function CommunityView({
     if (!title.trim() || !body.trim()) return;
     setError("");
     try {
-      const next = await communityApi.create(session.token, title, body, path || "就业", type || "问答", true);
-      setPosts([next, ...posts]);
+      const next = await communityApi.create(session.token, title, body, composePath, composeType, true);
+      setPosts(await communityApi.list({ path, type, keyword, sort }));
       setOwnPosts((current) => [next, ...current.filter((post) => post.id !== next.id)]);
       setSelectedPost(next);
       setTitle("");
@@ -1974,6 +1976,13 @@ function CommunityView({
   function cancelEdit() {
     setEditingPostId(null);
     setEditDraft(emptyPostDraft);
+  }
+
+  function closePostDetail() {
+    setSelectedPost(null);
+    setComments([]);
+    setCommentBody("");
+    cancelEdit();
   }
 
   async function saveEdit() {
@@ -2064,12 +2073,52 @@ function CommunityView({
   }
 
   return (
-    <div className="page-stack">
-      {!detailOnly && (
+    <div className="page-stack community-page">
+      {!detailOnly && !selectedPost && (
         <>
-          <section className="surface composer">
+          <section className="surface community-composer">
             <SectionTitle icon={Plus} title="发布帖子或提问" />
-            <div className="filter-row">
+            <div className="community-composer-layout">
+              <div className="community-compose-fields">
+                <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="输入标题，发布后进入审核流程" />
+                <textarea
+                  className="community-body-input"
+                  value={body}
+                  onChange={(event) => setBody(event.target.value)}
+                  placeholder="输入正文，至少 10 个字符"
+                  rows={7}
+                />
+              </div>
+              <div className="community-compose-meta">
+                <label>
+                  <span>路径</span>
+                  <select value={composePath} onChange={(event) => setComposePath(event.target.value)}>
+                    <option value="就业">就业</option>
+                    <option value="考公">考公</option>
+                    <option value="考研">考研</option>
+                  </select>
+                </label>
+                <label>
+                  <span>类型</span>
+                  <select value={composeType} onChange={(event) => setComposeType(event.target.value)}>
+                    <option value="问答">问答</option>
+                    <option value="经验帖">经验帖</option>
+                  </select>
+                </label>
+                <button className="primary-button full-width" onClick={addPost}>
+                  <Plus size={17} />
+                  {session ? "发布" : "登录后发布"}
+                </button>
+              </div>
+            </div>
+            {error && <p className="form-error">{error}</p>}
+          </section>
+          <section className="surface community-feed">
+            <div className="community-feed-head">
+              <SectionTitle icon={MessagesSquare} title="社区内容" />
+              <span>{posts.length} 条内容</span>
+            </div>
+            <div className="filter-row community-filter-row">
               <select value={path} onChange={(event) => setPath(event.target.value)}>
                 <option value="">全部路径</option>
                 <option value="就业">就业</option>
@@ -2088,22 +2137,11 @@ function CommunityView({
               </select>
               <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索标题或正文" />
             </div>
-            <div className="composer-row">
-              <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="输入标题，发布后进入审核流程" />
-              <input value={body} onChange={(event) => setBody(event.target.value)} placeholder="输入正文，至少 10 个字符" />
-              <button className="primary-button" onClick={addPost}>
-                <Plus size={17} />
-                {session ? "发布" : "登录后发布"}
-              </button>
-            </div>
-            {error && <p className="form-error">{error}</p>}
-          </section>
-          <section className="surface">
-            <SectionTitle icon={MessagesSquare} title="社区内容" />
             <PostList
               posts={posts}
               interactive
               manageableIds={ownPostIds}
+              clickable
               onOpen={openPost}
               onLike={(id) => interact(id, "like")}
               onFavorite={(id) => interact(id, "favorite")}
@@ -2130,11 +2168,11 @@ function CommunityView({
       )}
       {selectedPost && (
         <section className="surface community-detail">
-          {detailOnly && onBackToPaths && (
+          {(detailOnly ? onBackToPaths : closePostDetail) && (
             <div className="detail-toolbar">
-              <button className="secondary-button" onClick={onBackToPaths}>
+              <button className="secondary-button" onClick={detailOnly ? onBackToPaths : closePostDetail}>
                 <ArrowLeft size={16} />
-                返回三路径
+                {detailOnly ? "返回三路径" : "返回社区"}
               </button>
             </div>
           )}
@@ -2147,7 +2185,7 @@ function CommunityView({
                 <StatusPill status={selectedPost.status} />
               </div>
               <h2>{selectedPost.title}</h2>
-              <p>{selectedPost.body}</p>
+              <p className="community-detail-body">{selectedPost.body}</p>
               <small>{selectedPost.authorDisplay || "匿名用户"} · {selectedPost.createdAt}</small>
               {ownPostIds.has(selectedPost.id) && (
                 <div className="button-row compact-actions">
@@ -3371,14 +3409,19 @@ function PostList({
           <article
             className={clickablePost ? "post-item clickable-row" : "post-item"}
             key={post.id}
-            role={clickablePost ? "button" : undefined}
-            tabIndex={clickablePost ? 0 : undefined}
-            onClick={clickablePost ? () => onOpen?.(post) : undefined}
-            onKeyDown={clickablePost ? (event) => {
-              if (event.key === "Enter" || event.key === " ") onOpen?.(post);
-            } : undefined}
           >
-            <div className="post-main">
+            <div
+              className="post-main"
+              role={clickablePost ? "button" : undefined}
+              tabIndex={clickablePost ? 0 : undefined}
+              onClick={clickablePost ? () => onOpen?.(post) : undefined}
+              onKeyDown={clickablePost ? (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onOpen?.(post);
+                }
+              } : undefined}
+            >
               <div className="post-meta">
                 <span>{post.type}</span>
                 <span>{post.path}</span>
@@ -3390,31 +3433,41 @@ function PostList({
             </div>
             {showActions && (
               <div className="post-actions">
-              {onOpen && (
-                <button className="icon-button" title="查看详情" onClick={() => onOpen(post)}>
-                  <Search size={16} />
-                </button>
-              )}
-              <button className="icon-button" title="点赞" onClick={() => onLike?.(post.id)}>
+              <button className="icon-button" title="点赞" onClick={(event) => {
+                event.stopPropagation();
+                onLike?.(post.id);
+              }}>
                 <Heart size={16} />
                 <span>{post.likes}</span>
               </button>
-              <button className="icon-button" title="收藏" onClick={() => onFavorite?.(post.id)}>
+              <button className="icon-button" title="收藏" onClick={(event) => {
+                event.stopPropagation();
+                onFavorite?.(post.id);
+              }}>
                 <Star size={16} />
                 <span>{post.favorites}</span>
               </button>
               {interactive && (
-                <button className="icon-button" title="举报" onClick={() => onReport?.(post.id)}>
+                <button className="icon-button" title="举报" onClick={(event) => {
+                  event.stopPropagation();
+                  onReport?.(post.id);
+                }}>
                   <Flag size={16} />
                 </button>
               )}
               {canManage && onEdit && (
-                <button className="icon-button" title="编辑" onClick={() => onEdit(post)}>
+                <button className="icon-button" title="编辑" onClick={(event) => {
+                  event.stopPropagation();
+                  onEdit(post);
+                }}>
                   <PenLine size={16} />
                 </button>
               )}
               {canManage && onDelete && (
-                <button className="icon-button danger-icon" title="删除" onClick={() => onDelete(post)}>
+                <button className="icon-button danger-icon" title="删除" onClick={(event) => {
+                  event.stopPropagation();
+                  onDelete(post);
+                }}>
                   <Trash2 size={16} />
                 </button>
               )}
