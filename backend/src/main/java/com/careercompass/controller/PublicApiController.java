@@ -2,7 +2,6 @@ package com.careercompass.controller;
 
 import com.careercompass.model.Dtos.*;
 import com.careercompass.service.CompassService;
-import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -44,30 +43,12 @@ public class PublicApiController {
 
   @PostMapping("/auth/register")
   public ApiResponse<Session> register(@RequestBody AuthRequest request) {
-    return ApiResponse.message("注册成功，请继续补全基础档案", service.register(request));
-  }
-
-  @PostMapping("/auth/code")
-  public ApiResponse<VerificationCodeResponse> verificationCode(
-      @RequestBody VerificationCodeRequest request,
-      HttpServletRequest servletRequest
-  ) {
-    return ApiResponse.message("验证码已发送", service.sendVerificationCode(request, clientIp(servletRequest)));
+    return ApiResponse.message("注册成功", service.register(request));
   }
 
   @PostMapping("/auth/login")
   public ApiResponse<Session> login(@RequestBody AuthRequest request) {
     return ApiResponse.message("登录成功", service.login(request));
-  }
-
-  @PostMapping("/auth/login/code")
-  public ApiResponse<Session> loginByCode(@RequestBody AuthRequest request) {
-    return ApiResponse.message("验证码登录成功", service.loginByCode(request));
-  }
-
-  @PostMapping("/auth/password/reset")
-  public ApiResponse<Map<String, Object>> resetPassword(@RequestBody PasswordResetRequest request) {
-    return ApiResponse.message("密码已重置", service.resetPassword(request));
   }
 
   @GetMapping("/me")
@@ -336,15 +317,4 @@ public class PublicApiController {
     return ApiResponse.message("消息已全部标记已读", service.markAllMessagesRead(security.requireStudent(authorization)));
   }
 
-  private String clientIp(HttpServletRequest request) {
-    String forwarded = request.getHeader("X-Forwarded-For");
-    if (forwarded != null && !forwarded.isBlank()) {
-      return forwarded.split(",")[0].trim();
-    }
-    String realIp = request.getHeader("X-Real-IP");
-    if (realIp != null && !realIp.isBlank()) {
-      return realIp.trim();
-    }
-    return request.getRemoteAddr();
-  }
 }

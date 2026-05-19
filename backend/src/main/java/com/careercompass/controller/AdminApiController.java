@@ -74,11 +74,6 @@ public class AdminApiController {
     return ApiResponse.message("用户状态已更新", service.updateStudentStatus(request));
   }
 
-  @PostMapping("/users/{id}/reset-login")
-  public ApiResponse<Map<String, Object>> resetLoginState(@PathVariable long id) {
-    return ApiResponse.message("登录异常状态已重置", service.resetStudentLoginState(id));
-  }
-
   @PostMapping("/community/user/ban")
   public ApiResponse<Map<String, Object>> banUser(@RequestBody AdminStatusRequest request) {
     return ApiResponse.message("用户处罚状态已更新", service.banUser(request));

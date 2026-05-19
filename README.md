@@ -20,6 +20,7 @@ docker compose up --build
 完整容器启动后访问：
 
 - 前端：`http://localhost`
+- 后台界面：`http://localhost/admin`
 - 后端健康检查：`http://localhost:8080/api/health`
 - MySQL 端口：`3306`
 - 后台接口需要请求头：`X-Admin-Token: change-me-admin-token`
@@ -39,7 +40,7 @@ npm install
 npm run dev
 ```
 
-此时前端开发服务器运行在 `http://localhost:5173`，并代理 `/api` 与 `/admin` 到 `http://localhost:8080`。
+此时前端开发服务器运行在 `http://localhost:5173`，后台界面访问 `http://localhost:5173/admin`，并代理 `/api` 与 `/admin/...` 后台接口到 `http://localhost:8080`。
 
 ## 主要接口
 
@@ -60,7 +61,7 @@ npm run dev
 
 ## 需求覆盖
 
-- 学生注册登录、建档、深度问卷、AI 报告与报告追问
+- 学生注册登录、注册时填写基础档案、AI 开放访谈、AI 报告与报告追问
 - 首页、三路径页面、图表中心、模板下载、社区发帖评论举报
 - 管理员仪表盘、内容审核、社区用户管理、数据源抓取任务、AI 配置
 - 学校邮箱域名可配置、管理员 Token 鉴权、图表来源与统计口径展示
@@ -70,10 +71,10 @@ npm run dev
 
 当前版本已经把高风险缺口中的“数据持久化”和“业务状态流转”打通到 MySQL：
 
-- 学生注册/登录会写入并读取 `student_account`，密码使用 PBKDF2 哈希。
+- 学生注册/登录会写入并读取 `student_account`，注册时同步保存姓名、学院、专业和手机号；学号自动取学校邮箱前 10 位数字，毕业届别背景由邮箱前两位入学年份推算，密码使用 PBKDF2 哈希。
 - 登录后签发带 HMAC 签名的 Bearer Token。
-- 基础档案会更新学生状态：`待补全档案 -> 待完成问卷`。
-- 问卷提交会写入 `questionnaire_snapshot`，并生成 `ai_report` 报告快照。
+- 注册成功后学生状态直接进入 `待完成问卷`，后续仍可在工作台更新基础档案。
+- AI 访谈提交会写入 `questionnaire_snapshot`，并生成 `ai_report` 报告快照。
 - 社区发帖会写入 `community_post`，默认进入 `待审核`。
 - 评论、举报、后台帖子状态更新、用户状态更新、抓取候选任务会写入对应表。
 - 后台仪表盘从数据库实时统计注册量、问卷完成率、报告量和待审核量。

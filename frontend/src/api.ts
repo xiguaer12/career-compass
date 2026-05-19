@@ -38,6 +38,8 @@ export type AiReport = {
   generatedAt: string;
   scores: Array<{ path: string; score: number; rank: string; reasons: string[] }>;
   dimensions?: Array<{ subject: string; civil: number; postgraduate: number; employment: number }>;
+  narrativeReport?: string;
+  studentProfile?: string;
   summary: string;
   risks: string[];
   alternatives: string[];
@@ -75,6 +77,8 @@ export type InterviewMessage = {
 export type InterviewResponse = {
   assistantMessage: string;
   answers: Record<string, unknown>;
+  profileSummary?: string;
+  decisionSignals?: string[];
   completionPercent: number;
   readyToGenerate: boolean;
   missingFields: string[];
@@ -214,8 +218,6 @@ export type StudentAdminItem = {
   phone?: string;
   nickname?: string;
   status: string;
-  loginFailures: number;
-  lockedUntil?: string;
   createdAt: string;
   lastLoginAt?: string;
 };
@@ -304,30 +306,16 @@ export async function api<T>(path: string, options: RequestInit = {}, token?: st
     throw new Error(text || `请求失败：HTTP ${response.status}`);
   }
   if (!response.ok || !payload.success) {
-    throw new Error(payload.message || "请求失败");
+    throw new Error(payload.message || `请求失败：HTTP ${response.status}`);
   }
   return payload.data;
 }
 
 export const authApi = {
-  register: (email: string, password: string) =>
-    api<Session>("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password }) }),
-  registerWithCode: (email: string, password: string, code: string) =>
-    api<Session>("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password, code }) }),
+  register: (profile: Partial<StudentProfile> & { email: string; password: string }) =>
+    api<Session>("/api/auth/register", { method: "POST", body: JSON.stringify(profile) }),
   login: (email: string, password: string) =>
     api<Session>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
-  sendCode: (email: string, purpose: "register" | "login" | "reset_password") =>
-    api<{ email: string; purpose: string; expiresAt: string; debugCode?: string }>(
-      "/api/auth/code",
-      { method: "POST", body: JSON.stringify({ email, purpose }) }
-    ),
-  loginByCode: (email: string, code: string) =>
-    api<Session>("/api/auth/login/code", { method: "POST", body: JSON.stringify({ email, code }) }),
-  resetPassword: (email: string, code: string, newPassword: string) =>
-    api<Record<string, unknown>>(
-      "/api/auth/password/reset",
-      { method: "POST", body: JSON.stringify({ email, code, newPassword, confirmed: true }) }
-    ),
   me: (token: string) => api<StudentProfile>("/api/me", {}, token)
 };
 
@@ -473,8 +461,6 @@ export const adminApi = {
   },
   updateStudentStatus: (token: string, id: number, status: string, reason = "后台操作") =>
     api<Record<string, unknown>>("/admin/users/status", { method: "POST", body: JSON.stringify({ id, status, reason }) }, token),
-  resetStudentLogin: (token: string, id: number) =>
-    api<Record<string, unknown>>(`/admin/users/${id}/reset-login`, { method: "POST" }, token),
   candidates: (token: string, status = "") =>
     api<CrawlCandidateItem[]>(`/admin/crawl/candidates${status ? `?status=${encodeURIComponent(status)}` : ""}`, {}, token),
   reviewCandidate: (token: string, id: number, action: string, patch: Record<string, unknown> = {}) =>

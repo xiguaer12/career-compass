@@ -17,13 +17,17 @@ public final class Dtos {
     }
   }
 
-  public record AuthRequest(String email, String password, String code) {}
-
-  public record VerificationCodeRequest(String email, String purpose) {}
-
-  public record VerificationCodeResponse(String email, String purpose, String expiresAt, String debugCode) {}
-
-  public record PasswordResetRequest(String email, String code, String newPassword, Boolean confirmed) {}
+  public record AuthRequest(
+      String email,
+      String password,
+      String name,
+      String studentNo,
+      String college,
+      String major,
+      String graduationYear,
+      String phone,
+      String nickname
+  ) {}
 
   public record CancelAccountRequest(String reason, Boolean confirmed) {}
 
@@ -179,6 +183,8 @@ public final class Dtos {
   public record InterviewResponse(
       String assistantMessage,
       Map<String, Object> answers,
+      String profileSummary,
+      List<String> decisionSignals,
       int completionPercent,
       boolean readyToGenerate,
       List<String> missingFields
@@ -210,6 +216,8 @@ public final class Dtos {
       String generatedAt,
       List<Score> scores,
       List<DimensionScore> dimensions,
+      String narrativeReport,
+      String studentProfile,
       String summary,
       List<String> risks,
       List<String> alternatives,
@@ -283,8 +291,6 @@ public final class Dtos {
       String phone,
       String nickname,
       String status,
-      int loginFailures,
-      String lockedUntil,
       String createdAt,
       String lastLoginAt
   ) {}

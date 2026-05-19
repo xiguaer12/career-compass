@@ -15,28 +15,13 @@ CREATE TABLE IF NOT EXISTS student_account (
   avatar_url VARCHAR(500),
   privacy_json JSON,
   agreement_accepted TINYINT(1) NOT NULL DEFAULT 0,
-  status VARCHAR(30) NOT NULL DEFAULT '待邮箱验证',
-  login_failures INT NOT NULL DEFAULT 0,
-  locked_until TIMESTAMP NULL,
+  status VARCHAR(30) NOT NULL DEFAULT '待完成问卷',
   canceled_at TIMESTAMP NULL,
   profile_updated_at TIMESTAMP NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_login_at TIMESTAMP NULL,
   INDEX idx_student_status (status),
   INDEX idx_student_graduation_year (graduation_year)
-);
-
-CREATE TABLE IF NOT EXISTS verification_code (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  email VARCHAR(120) NOT NULL,
-  purpose VARCHAR(30) NOT NULL,
-  code_hash VARCHAR(255) NOT NULL,
-  ip_address VARCHAR(80),
-  attempts INT NOT NULL DEFAULT 0,
-  expires_at TIMESTAMP NOT NULL,
-  used_at TIMESTAMP NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_code_email_purpose (email, purpose, created_at)
 );
 
 CREATE TABLE IF NOT EXISTS questionnaire_snapshot (

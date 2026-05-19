@@ -147,6 +147,54 @@ textarea:focus-visible {
   border-radius: 8px;
 }
 
+.admin-shell {
+  background: #f4f7fb;
+}
+
+.admin-sidebar {
+  color: #e2e8f0;
+  background: #172033;
+  border-right: 0;
+}
+
+.admin-sidebar .brand-mark {
+  color: #172033;
+  background: #f8fafc;
+}
+
+.admin-sidebar .brand span:last-child,
+.admin-sidebar .sidebar-note {
+  color: #cbd5e1;
+}
+
+.admin-side-panel {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.18);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.08);
+}
+
+.admin-side-panel strong {
+  font-size: 15px;
+}
+
+.admin-side-panel span {
+  color: #cbd5e1;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.admin-sidebar .sidebar-note {
+  background: rgba(248, 250, 252, 0.08);
+  border-color: rgba(226, 232, 240, 0.18);
+}
+
+.admin-main {
+  background: #f4f7fb;
+}
+
 .main {
   padding: 24px;
   min-width: 0;
@@ -360,6 +408,22 @@ textarea:focus-visible {
   background: white;
   box-shadow: 0 24px 80px rgba(15, 23, 42, 0.24);
   padding: 20px;
+}
+
+.register-auth-modal {
+  width: min(720px, 100%);
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+}
+
+.register-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.register-profile-grid .full-span {
+  grid-column: 1 / -1;
 }
 
 .inline-admin {
@@ -1295,6 +1359,32 @@ th {
   border-radius: 8px;
 }
 
+.report-narrative > p {
+  margin: 0;
+  color: #334155;
+  line-height: 1.9;
+  white-space: pre-line;
+}
+
+.report-profile-box {
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.report-profile-box strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.report-profile-box p {
+  margin: 0;
+  color: #475569;
+  line-height: 1.8;
+}
+
 .reason-box p,
 .plan-item p,
 .info-list p {
@@ -1328,6 +1418,36 @@ th {
 .interview-panel {
   display: grid;
   gap: 14px;
+}
+
+.interview-insight-box {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d5e0eb;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.interview-insight-box p {
+  margin: 0;
+  color: #334155;
+  line-height: 1.7;
+}
+
+.interview-insight-box div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.interview-insight-box span {
+  border-radius: 999px;
+  background: #edf4ff;
+  color: #1d4ed8;
+  padding: 6px 9px;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .interview-history {
@@ -1856,6 +1976,7 @@ th {
   .path-news-layout,
   .community-filter-row,
   .form-grid,
+  .register-profile-grid,
   .plan-grid,
   .config-grid,
   .comment-box {

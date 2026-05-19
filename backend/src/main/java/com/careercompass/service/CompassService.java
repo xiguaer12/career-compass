@@ -28,7 +28,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -54,19 +53,25 @@ public class CompassService {
   private static final String POSTGRADUATE_SOURCE_URL = "https://news.cctv.cn/2025/11/24/ARTINT5iuLLp0mtEfdDd7Kkl251124.shtml";
   private static final String CIVIL_EXAM_SOURCE_URL = "https://www.gov.cn/lianbo/bumen/202510/content_7045734.htm";
   private static final int MAX_COMMUNITY_IMAGES = 3;
-  private static final List<String> REQUIRED_QUESTION_KEYS = List.of(
-      "academic", "certificates", "project", "constraints", "city", "riskPreference",
-      "employmentInterest", "civilInterest", "postgraduateInterest"
+  private static final Map<String, List<String>> USST_COLLEGE_MAJORS = Map.ofEntries(
+      Map.entry("能源与动力工程学院", List.of("过程装备与控制工程", "能源与动力工程", "新能源科学与工程", "储能科学与工程")),
+      Map.entry("光电信息与计算机工程学院", List.of("测控技术与仪器", "电子信息工程", "电子科学与技术", "通信工程", "光电信息科学与工程", "自动化", "计算机科学与技术", "智能科学与技术", "数据科学与大数据技术")),
+      Map.entry("管理学院", List.of("税收学", "金融学", "国际经济与贸易", "系统科学与工程", "人工智能", "交通工程", "管理科学", "信息管理与信息系统", "工商管理", "会计学", "公共事业管理", "工业工程")),
+      Map.entry("机械工程学院", List.of("机械设计制造及其自动化", "车辆工程", "电气工程及其自动化", "机器人工程")),
+      Map.entry("外语学院", List.of("英语", "德语", "日语")),
+      Map.entry("环境与建筑学院", List.of("土木工程", "建筑环境与能源应用工程", "环境工程")),
+      Map.entry("健康科学与工程学院", List.of("生物医学工程", "食品科学与工程", "食品质量与安全", "康复工程", "医学信息工程", "智能医学工程", "医学影像技术", "制药工程", "生物技术")),
+      Map.entry("出版印刷与艺术设计学院", List.of("编辑出版学", "传播学", "广告学", "工业设计", "新媒体技术", "包装工程", "动画", "视觉传达设计", "环境设计", "产品设计", "包装设计")),
+      Map.entry("理学院", List.of("数学与应用数学", "应用物理学")),
+      Map.entry("材料与化学学院", List.of("材料成型及控制工程", "材料科学与工程", "应用化学")),
+      Map.entry("中英国际学院", List.of("电子信息科学与技术（中英合作）", "机械设计制造及其自动化（中英合作）", "工商管理（中英合作）", "会展经济与管理"))
   );
 
   private final Pattern studentEmailPattern;
-  private final List<String> graduationYears;
   private final JdbcTemplate jdbc;
   private final ObjectMapper objectMapper;
   private final SecurityService security;
   private final LlmClient llmClient;
-  private final boolean exposeDevCodes;
-  private final Random random = new Random();
   private final HttpClient crawlHttpClient = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(12))
       .followRedirects(HttpClient.Redirect.NORMAL)
@@ -99,8 +104,6 @@ public class CompassService {
 
   public CompassService(
       @Value("${app.student-email-pattern:^\\d{10}@st\\.usst\\.edu\\.cn$}") String studentEmailPattern,
-      @Value("${app.graduation-years:2025,2026,2027}") String graduationYears,
-      @Value("${app.expose-dev-verification-codes:true}") boolean exposeDevCodes,
       @Value("${app.auto-crawl.enabled:true}") boolean autoCrawlEnabled,
       @Value("${app.auto-crawl.initial-delay-minutes:5}") int autoCrawlInitialDelayMinutes,
       @Value("${app.auto-crawl.interval-minutes:60}") int autoCrawlIntervalMinutes,
@@ -115,11 +118,6 @@ public class CompassService {
       LlmClient llmClient
   ) {
     this.studentEmailPattern = Pattern.compile(studentEmailPattern, Pattern.CASE_INSENSITIVE);
-    this.graduationYears = List.of(graduationYears.split(",")).stream()
-        .map(String::trim)
-        .filter(StringUtils::hasText)
-        .toList();
-    this.exposeDevCodes = exposeDevCodes;
     this.autoCrawlEnabled = autoCrawlEnabled;
     this.autoCrawlInitialDelayMinutes = Math.max(1, autoCrawlInitialDelayMinutes);
     this.autoCrawlIntervalMinutes = Math.max(5, autoCrawlIntervalMinutes);
@@ -137,11 +135,8 @@ public class CompassService {
   @PostConstruct
   public void ensureSchemaAndSeedData() {
     createRuntimeTables();
-    addColumn("student_account", "login_failures INT NOT NULL DEFAULT 0");
-    addColumn("student_account", "locked_until TIMESTAMP NULL");
     addColumn("student_account", "canceled_at TIMESTAMP NULL");
     addColumn("student_account", "profile_updated_at TIMESTAMP NULL");
-    addColumn("verification_code", "ip_address VARCHAR(80)");
     addColumn("questionnaire_snapshot", "step_key VARCHAR(60)");
     addColumn("questionnaire_snapshot", "completion_percent INT NOT NULL DEFAULT 0");
     addColumn("questionnaire_snapshot", "expires_at TIMESTAMP NULL");
@@ -181,68 +176,54 @@ public class CompassService {
     chartExecutor.shutdownNow();
   }
 
-  public VerificationCodeResponse sendVerificationCode(VerificationCodeRequest request, String ipAddress) {
-    String email = normalizeEmail(request == null ? null : request.email());
-    String purpose = normalizePurpose(request == null ? null : request.purpose());
-    validateEmailDomain(email);
-    String clientIp = valueOr(ipAddress, "unknown");
-    Integer recent = jdbc.queryForObject(
-        "select count(*) from verification_code where email = ? and purpose = ? and created_at > date_sub(current_timestamp, interval 10 minute)",
-        Integer.class,
-        email,
-        purpose
-    );
-    if (recent != null && recent >= 3) {
-      throw new IllegalArgumentException("同一邮箱 10 分钟内最多发送 3 次验证码，请稍后再试");
-    }
-    Integer recentByIp = jdbc.queryForObject(
-        "select count(*) from verification_code where ip_address = ? and created_at > date_sub(current_timestamp, interval 10 minute)",
-        Integer.class,
-        clientIp
-    );
-    if (recentByIp != null && recentByIp >= 10) {
-      throw new IllegalArgumentException("同一 IP 10 分钟内最多触发 10 次验证码发送请求，请稍后再试");
-    }
-    String code = "%06d".formatted(random.nextInt(1_000_000));
-    Instant expiresAt = Instant.now().plusSeconds(600);
-    jdbc.update(
-        "insert into verification_code (email, purpose, code_hash, expires_at, ip_address) values (?, ?, ?, ?, ?)",
-        email,
-        purpose,
-        security.hashPassword(code),
-        Timestamp.from(expiresAt),
-        clientIp
-    );
-    return new VerificationCodeResponse(email, purpose, expiresAt.toString(), exposeDevCodes ? code : null);
-  }
-
   public Session register(AuthRequest request) {
     validateAuth(request);
     String email = normalizeEmail(request.email());
-    consumeVerificationCode(email, "register", request.code());
     Integer existing = jdbc.queryForObject("select count(*) from student_account where email = ?", Integer.class, email);
     if (existing != null && existing > 0) {
-      throw new IllegalArgumentException("该邮箱已注册，请直接登录或找回密码");
+      throw new IllegalArgumentException("该邮箱已注册，请直接登录");
     }
+    String studentNo = studentNoFromEmail(email);
+    String graduationYear = graduationYearFromStudentNo(studentNo);
+    ProfileRequest profileRequest = new ProfileRequest(
+        request.name(),
+        studentNo,
+        request.college(),
+        request.major(),
+        graduationYear,
+        request.phone(),
+        request.nickname(),
+        Map.of("hideSensitive", true)
+    );
+    validateProfile(0, profileRequest, studentNo);
 
     KeyHolder keyHolder = new GeneratedKeyHolder();
     jdbc.update(connection -> {
       PreparedStatement statement = connection.prepareStatement(
           """
           insert into student_account
-            (email, password_hash, agreement_accepted, status)
-          values (?, ?, 1, '待补全档案')
+            (email, password_hash, name, student_no, college, major, graduation_year, phone, nickname,
+             privacy_json, agreement_accepted, status, profile_updated_at)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, cast(? as json), 1, '待完成问卷', current_timestamp)
           """,
           Statement.RETURN_GENERATED_KEYS
       );
       statement.setString(1, email);
       statement.setString(2, security.hashPassword(request.password()));
+      statement.setString(3, profileRequest.name());
+      statement.setString(4, studentNo);
+      statement.setString(5, profileRequest.college());
+      statement.setString(6, profileRequest.major());
+      statement.setString(7, graduationYear);
+      statement.setString(8, profileRequest.phone());
+      statement.setString(9, StringUtils.hasText(profileRequest.nickname()) ? profileRequest.nickname() : null);
+      statement.setString(10, toJson(profileRequest.privacy()));
       return statement;
     }, keyHolder);
 
     long id = keyHolder.getKey().longValue();
-    audit("student:" + email, "REGISTER", "student_account", String.valueOf(id), Map.of("email", email));
-    createMessage(id, "系统", "注册成功", "请继续补全基础档案并完成深度问卷。", "/workspace");
+    audit("student:" + email, "REGISTER", "student_account", String.valueOf(id), Map.of("email", email, "studentNo", studentNo, "college", profileRequest.college(), "major", profileRequest.major()));
+    createMessage(id, "系统", "注册成功", "基础档案已保存，可以直接开始 AI 访谈。", "/workspace");
     StudentProfile profile = findStudent(id).orElseThrow();
     return new Session(security.issueToken(id, email, "student"), "student", profile.status(), profile);
   }
@@ -251,7 +232,7 @@ public class CompassService {
     validateAuth(request);
     String email = normalizeEmail(request.email());
     List<Map<String, Object>> rows = jdbc.queryForList(
-        "select id, password_hash, status, login_failures, locked_until from student_account where email = ?",
+        "select id, password_hash, status from student_account where email = ?",
         email
     );
     if (rows.isEmpty()) {
@@ -261,49 +242,11 @@ public class CompassService {
     assertLoginAllowed(row);
     long id = ((Number) row.get("id")).longValue();
     if (!security.verifyPassword(request.password(), String.valueOf(row.get("password_hash")))) {
-      registerLoginFailure(id, row);
       throw new IllegalArgumentException("账号或密码错误");
     }
-    jdbc.update(
-        "update student_account set last_login_at = current_timestamp, login_failures = 0, locked_until = null where id = ?",
-        id
-    );
+    jdbc.update("update student_account set last_login_at = current_timestamp where id = ?", id);
     StudentProfile profile = findStudent(id).orElseThrow();
     return new Session(security.issueToken(id, email, "student"), "student", profile.status(), profile);
-  }
-
-  public Session loginByCode(AuthRequest request) {
-    String email = normalizeEmail(request == null ? null : request.email());
-    validateEmailDomain(email);
-    consumeVerificationCode(email, "login", request.code());
-    List<Map<String, Object>> rows = jdbc.queryForList("select id, status from student_account where email = ?", email);
-    if (rows.isEmpty()) {
-      throw new IllegalArgumentException("账号不存在，请先注册");
-    }
-    Map<String, Object> row = rows.getFirst();
-    assertLoginAllowed(row);
-    long id = ((Number) row.get("id")).longValue();
-    jdbc.update("update student_account set last_login_at = current_timestamp, login_failures = 0, locked_until = null where id = ?", id);
-    StudentProfile profile = findStudent(id).orElseThrow();
-    return new Session(security.issueToken(id, email, "student"), "student", profile.status(), profile);
-  }
-
-  public Map<String, Object> resetPassword(PasswordResetRequest request) {
-    String email = normalizeEmail(request == null ? null : request.email());
-    validateEmailDomain(email);
-    validatePassword(request == null ? null : request.newPassword());
-    requireConfirmed(request == null ? null : request.confirmed(), "重置密码");
-    consumeVerificationCode(email, "reset_password", request.code());
-    int updated = jdbc.update(
-        "update student_account set password_hash = ?, login_failures = 0, locked_until = null where email = ?",
-        security.hashPassword(request.newPassword()),
-        email
-    );
-    if (updated == 0) {
-      throw new IllegalArgumentException("账号不存在");
-    }
-    audit("student:" + email, "RESET_PASSWORD", "student_account", email, Map.of("email", email));
-    return Map.of("email", email, "status", "密码已重置");
   }
 
   public AdminSession adminLogin(AdminLoginRequest request) {
@@ -331,9 +274,8 @@ public class CompassService {
   }
 
   public StudentProfile saveProfile(AuthUser user, ProfileRequest request) {
-    String studentNo = StringUtils.hasText(request == null ? null : request.studentNo())
-        ? request.studentNo()
-        : studentNoFromEmail(user.email());
+    String studentNo = studentNoFromEmail(user.email());
+    String graduationYear = graduationYearFromStudentNo(studentNo);
     validateProfile(user.id(), request, studentNo);
     jdbc.update(
         """
@@ -348,13 +290,13 @@ public class CompassService {
         studentNo,
         request.college(),
         request.major(),
-        request.graduationYear(),
+        graduationYear,
         request.phone(),
         StringUtils.hasText(request.nickname()) ? request.nickname() : null,
         toJson(request.privacy() == null ? Map.of("hideSensitive", true) : request.privacy()),
         user.id()
     );
-    audit("student:" + user.email(), "SAVE_PROFILE", "student_account", String.valueOf(user.id()), Map.of("graduationYear", request.graduationYear()));
+    audit("student:" + user.email(), "SAVE_PROFILE", "student_account", String.valueOf(user.id()), Map.of("studentNo", studentNo, "graduationYear", graduationYear));
     return me(user);
   }
 
@@ -511,7 +453,7 @@ public class CompassService {
     String mainPath = latest == null ? null : latest.scores().stream()
         .max(Comparator.comparingInt(Score::score))
         .map(Score::path)
-        .orElse(null);
+        .orElse(StringUtils.hasText(latest.narrativeReport()) ? "已生成开放报告" : null);
     List<String> alternatives = latest == null ? List.of() : latest.scores().stream()
         .sorted(Comparator.comparingInt(Score::score).reversed())
         .skip(1)
@@ -649,7 +591,7 @@ public class CompassService {
 
   public QuestionnaireDraft saveDraft(AuthUser user, AssessmentRequest request) {
     ensureQuestionnaireAllowed(user);
-    Map<String, Object> answers = request == null || request.answers() == null ? Map.of() : request.answers();
+    Map<String, Object> answers = openAssessmentAnswers(request == null || request.answers() == null ? Map.of() : request.answers());
     String version = StringUtils.hasText(request == null ? null : request.questionnaireVersion()) ? request.questionnaireVersion() : QUESTIONNAIRE_VERSION;
     String stepKey = valueOr(request == null ? null : request.stepKey(), "profile");
     int percent = clamp(request == null || request.completionPercent() == null ? 0 : request.completionPercent());
@@ -705,7 +647,7 @@ public class CompassService {
         (rs, rowNum) -> new QuestionnaireDraft(
             rs.getLong("id"),
             rs.getString("questionnaire_version"),
-            jsonToMap(rs.getString("answers_json")),
+            openAssessmentAnswers(jsonToMap(rs.getString("answers_json"))),
             rs.getString("step_key"),
             rs.getInt("completion_percent"),
             rs.getString("status"),
@@ -718,9 +660,11 @@ public class CompassService {
 
   public InterviewResponse interviewAssessment(AuthUser user, InterviewRequest request) {
     ensureQuestionnaireAllowed(user);
+    ensureLlmAvailable();
+    StudentProfile profile = me(user);
     List<Map<String, String>> messages = request == null || request.messages() == null ? List.of() : request.messages();
-    InterviewResponse fallback = fallbackInterview(messages);
-    InterviewResponse response = llmClient.interview(messages, fallback);
+    InterviewResponse fallback = fallbackInterview(messages, profile);
+    InterviewResponse response = llmClient.interview(messages, profile, fallback);
     saveDraft(user, new AssessmentRequest(
         QUESTIONNAIRE_VERSION,
         response.answers(),
@@ -732,7 +676,8 @@ public class CompassService {
 
   public ReportTask submitAssessment(AuthUser user, AssessmentRequest request) {
     ensureQuestionnaireAllowed(user);
-    Map<String, Object> answers = request == null || request.answers() == null ? latestDraft(user).map(QuestionnaireDraft::answers).orElse(Map.of()) : request.answers();
+    ensureLlmAvailable();
+    Map<String, Object> answers = openAssessmentAnswers(request == null || request.answers() == null ? latestDraft(user).map(QuestionnaireDraft::answers).orElse(Map.of()) : request.answers());
     validateAssessment(answers);
     String version = StringUtils.hasText(request == null ? null : request.questionnaireVersion()) ? request.questionnaireVersion() : QUESTIONNAIRE_VERSION;
     KeyHolder questionnaireKey = new GeneratedKeyHolder();
@@ -778,7 +723,7 @@ public class CompassService {
     jdbc.update("update ai_report set report_json = cast(? as json) where id = ?", toJson(persisted), reportId);
     audit("student:" + user.email(), "START_REPORT_GENERATION", "ai_report", String.valueOf(reportId), Map.of("questionnaireVersion", version));
     scheduleReportGeneration(reportId, user.id(), user.email(), answers, version);
-    return new ReportTask("生成中", reportId, persisted, "问卷已提交，AI 报告正在生成");
+    return new ReportTask("生成中", reportId, persisted, "访谈素材已提交，AI 报告正在生成");
   }
 
   public ReportTask reportTask(AuthUser user, long reportId) {
@@ -810,6 +755,7 @@ public class CompassService {
   }
 
   public ReportTask retryReport(AuthUser user, long reportId) {
+    ensureLlmAvailable();
     List<Map<String, Object>> rows = jdbc.queryForList(
         """
         select r.id, r.student_id, r.generation_status, q.answers_json, q.questionnaire_version
@@ -824,7 +770,7 @@ public class CompassService {
     if (!"失败".equals(String.valueOf(row.get("generation_status")))) {
       throw new IllegalArgumentException("仅失败的报告任务可以重试");
     }
-    Map<String, Object> answers = jsonToMap(String.valueOf(row.get("answers_json")));
+    Map<String, Object> answers = openAssessmentAnswers(jsonToMap(String.valueOf(row.get("answers_json"))));
     String version = String.valueOf(row.get("questionnaire_version"));
     AiReport retrying = buildReport(reportId, answers, version, "生成中");
     jdbc.update(
@@ -889,7 +835,9 @@ public class CompassService {
         "select id, report_version, generated_at, report_json from ai_report where student_id = ? and generation_status = '已完成' order by generated_at desc, id desc",
         (rs, rowNum) -> {
           AiReport report = fromJson(rs.getString("report_json"), AiReport.class);
-          Score top = report.scores().stream().max(Comparator.comparingInt(Score::score)).orElse(new Score("就业", 0, "", List.of()));
+          Score top = report.scores().stream()
+              .max(Comparator.comparingInt(Score::score))
+              .orElse(new Score(StringUtils.hasText(report.narrativeReport()) ? "开放报告" : "就业", 0, "", List.of()));
           return new ReportHistoryItem(
               rs.getLong("id"),
               rs.getString("report_version"),
@@ -904,16 +852,17 @@ public class CompassService {
 
   public AiAnswer answer(AuthUser user, AiQuestion question) {
     requireCompletedStudent(user);
+    ensureLlmAvailable();
     String asked = question == null || !StringUtils.hasText(question.question()) ? "如何安排下一步行动" : question.question();
     AiAnswer fallback = new AiAnswer(
         "你正在追问：" + asked + "。我会基于最新报告的主路径、备选路径和约束条件回答。",
-        List.of("三路径评分差距", "当前可投入时间", "城市与家庭约束", "毕业年份窗口", "已有项目/实习材料"),
+        List.of("报告正文中的关键判断", "当前可投入时间", "城市与家庭约束", "已有项目/实习材料"),
         List.of("就业适合作为短期主线，反馈周期短", "考公适合作为稳定性备选，但岗位条件要提前筛选", "考研适合明确专业方向且能持续投入的情况"),
         List.of("把 30 天计划拆成每周任务并记录完成情况", "每两周复核一次主路径和备选路径的投入比例", "遇到分差小于 10 分时保留至少一个备选时间块"),
         List.of("AI 建议仅供辅助决策", "关键选择应结合辅导员、导师和家庭约束复核")
     );
     AiReport report = reportForQuestion(user, question).orElse(null);
-    return llmClient.answer(report, question, latestAiConfigContent("prompt", "围绕报告输入快照给出结构化追问回答。"), fallback);
+    return llmClient.answer(report, question, latestAiConfigContent("prompt", "围绕报告正文和访谈素材回答追问，不输出录取、上岸、就业结果承诺。"), fallback);
   }
 
   public List<CommunityPost> communityPosts(String path, String type, String keyword, String sort) {
@@ -1471,8 +1420,6 @@ public class CompassService {
         rs.getString("phone"),
         rs.getString("nickname"),
         rs.getString("status"),
-        rs.getInt("login_failures"),
-        toInstantString(rs.getTimestamp("locked_until")),
         toInstantString(rs.getTimestamp("created_at")),
         toInstantString(rs.getTimestamp("last_login_at"))
     ), params.toArray());
@@ -1487,13 +1434,6 @@ public class CompassService {
     audit("admin", "UPDATE_USER_STATUS", "student_account", String.valueOf(request.id()), Map.of("status", request.status(), "reason", valueOr(request.reason(), "")));
     createMessage(request.id(), "账号", "账号状态已更新", "你的账号状态已更新为：" + request.status(), "/me");
     return Map.of("userId", request.id(), "status", request.status(), "updatedAt", Instant.now().toString());
-  }
-
-  public Map<String, Object> resetStudentLoginState(long id) {
-    int updated = jdbc.update("update student_account set login_failures = 0, locked_until = null where id = ?", id);
-    if (updated == 0) throw new IllegalArgumentException("用户不存在");
-    audit("admin", "RESET_LOGIN_STATE", "student_account", String.valueOf(id), Map.of("id", id));
-    return Map.of("userId", id, "status", "登录异常状态已重置");
   }
 
   public List<ChartItem> adminCharts() {
@@ -2448,20 +2388,6 @@ public class CompassService {
 
   private void createRuntimeTables() {
     execute("""
-        create table if not exists verification_code (
-          id bigint primary key auto_increment,
-          email varchar(120) not null,
-          purpose varchar(30) not null,
-          code_hash varchar(255) not null,
-          ip_address varchar(80),
-          attempts int not null default 0,
-          expires_at timestamp not null,
-          used_at timestamp null,
-          created_at timestamp not null default current_timestamp,
-          index idx_code_email_purpose (email, purpose, created_at)
-        )
-        """);
-    execute("""
         create table if not exists community_interaction (
           id bigint primary key auto_increment,
           post_id bigint not null,
@@ -2580,9 +2506,9 @@ public class CompassService {
     jdbc.update(
         """
         insert into student_account
-          (id, email, password_hash, name, student_no, college, major, graduation_year, phone, nickname, agreement_accepted, status)
+          (email, password_hash, name, student_no, college, major, graduation_year, phone, nickname, agreement_accepted, status)
         values
-          (1, '2335061025@st.usst.edu.cn', '$2a$10$demo', '张同学', '2335061025', '光电信息与计算机工程学院', '计算机科学与技术', '2026', '13800000000', 'Compass 用户', 1, '已完成引导')
+          ('2335061025@st.usst.edu.cn', '$2a$10$demo', '张同学', '2335061025', '光电信息与计算机工程学院', '计算机科学与技术', '2027', '13800000000', 'Compass 用户', 1, '已完成引导')
         on duplicate key update
           name = values(name), student_no = values(student_no), college = values(college), major = values(major),
           graduation_year = values(graduation_year), phone = values(phone), nickname = values(nickname), status = values(status)
@@ -2591,9 +2517,9 @@ public class CompassService {
     seedContent(1, "国考职位表先筛专业和基层经历", "考公", "国家公务员局专题页的公告、报考指南和职位表能直接决定能不能报。学生应先核对专业限制、学历学位、政治面貌、基层经历、招录人数、报名确认和资格复审材料，再判断是否投入备考。", "国家公务员局考试录用专题", "http://bm.scs.gov.cn/kl2026");
     seedContent(2, "用研招网专业目录锁定考试科目", "考研", "研招网硕士专业目录按专业或招生单位查询当年招生专业和考试科目。择校时先核对专业代码、研究方向、学习方式、初试科目和专项计划，再到学院官网确认复试细则。", "中国研究生招生信息网", "https://yz.chsi.com.cn/zsml/");
     seedContent(3, "24365 职位库适合建立岗位关键词池", "就业", "国家大学生就业服务平台职位库可按城市、学历、岗位类型和实习/全职筛选。学生可记录岗位名称、专业要求、企业行业、投递截止时间和高频技能词，用来反推简历项目表达。", "国家大学生就业服务平台", "https://24365.ncss.cn/student/jobs/index.html");
-    seedContent(4, "2026 届毕业年份范围已开放维护", "公告", "未完成基础档案的学生请先补全资料，再进入深度问卷。", "后台维护", "");
+    seedContent(4, "学校邮箱自动识别学号", "公告", "注册时会根据学校邮箱前 10 位数字自动绑定学号，并自动推算基础届别背景。", "后台维护", "");
     seedContent(5, "公开权威数据发布前均需人工审核", "公告", "新增数据源抓取候选不会直接公开，管理员审核通过后才进入前台展示。", "后台维护", "");
-    seedContent(6, "问卷草稿会保存多久？", "FAQ", "深度问卷草稿至少保存 180 天，再次进入会恢复最近一次填写位置。", "后台维护", "");
+    seedContent(6, "访谈草稿会保存多久？", "FAQ", "AI 访谈草稿至少保存 180 天，再次进入会恢复最近一次整理结果。", "后台维护", "");
     seedContent(7, "AI 报告能替我做决定吗？", "FAQ", "AI 报告仅供辅助决策，不替代学生最终选择。", "后台维护", "");
     seedContent(8, "上海本地招录公告重点看附件", "考公", "上海公务员局招录专题和上海人社招聘公告更适合查上海本地招录批次。重点看公告附件里的岗位代码、专业目录口径、资格条件、报名入口、审核、缴费和面试节点，别只看新闻标题。", "上海市公务员局 / 上海人社", "https://rsj.sh.gov.cn/tzpgg_17408/index.html");
     seedContent(9, "调剂系统开放前先整理可接受边界", "考研", "研招网复试调剂页会显示调剂系统状态、基本要求、注意事项和院校调剂信息。初试分数处于边缘时，应提前整理成绩、专业背景、目标地区和可接受专业，避免系统开放时临时筛校。", "研招网复试调剂", "https://yz.chsi.com.cn/yztj/");
@@ -2739,9 +2665,9 @@ public class CompassService {
     seedTag("计算机科学与技术", "专业标签", 1);
     seedTag("经验帖", "内容标签", 1);
     seedTag("问答", "内容标签", 2);
-    seedAiConfig("questionnaire", QUESTIONNAIRE_VERSION, "深度问卷模板", "学业成绩、英语与证书、项目/实习、家庭与经济约束、目标城市、风险偏好、兴趣倾向、时间投入、压力承受、三路径意愿强度、当前困难点", "已发布");
-    seedAiConfig("report_template", TEMPLATE_VERSION, "三路径报告模板", "输出现状摘要、三路径评分、推荐排序、推荐理由、主要风险、备选方案、30/60/90 天行动计划、资源建议与免责声明。", "已发布");
-    seedAiConfig("prompt", PROMPT_VERSION, "报告生成提示词", "基于问卷输入快照生成职业路径辅助建议，不输出录取、上岸、就业结果承诺。", "已发布");
+    seedAiConfig("questionnaire", QUESTIONNAIRE_VERSION, "开放访谈素材模板", "围绕学生原始叙述、关键经历、价值取向、现实约束、情绪压力、资源条件、路径假设和未说透的矛盾进行开放整理。", "已发布");
+    seedAiConfig("report_template", TEMPLATE_VERSION, "开放式报告模板", "基于学生开放访谈素材直接写一篇完整自然语言报告。可以比较考公、考研、就业，也可以按学生真实情况自由组织判断，不要求输出评分、固定维度或固定行动计划。", "已发布");
+    seedAiConfig("prompt", PROMPT_VERSION, "报告生成提示词", "像读完访谈记录的咨询老师一样综合判断学生经历、动机、约束、情绪压力、资源条件和未说透的矛盾；报告只供辅助决策，不输出录取、上岸、就业结果承诺。", "已发布");
     seedAiConfig("disclaimer", "DISC-2026.05", "AI 免责声明", "AI 报告仅供辅助决策，不替代学生最终选择。", "已发布");
   }
 
@@ -3068,8 +2994,8 @@ public class CompassService {
             questionnaireVersion,
             TEMPLATE_VERSION,
             PROMPT_VERSION,
-            latestAiConfigContent("report_template", "输出现状摘要、三路径评分、推荐排序、推荐理由、主要风险、备选方案、30/60/90 天行动计划、资源建议与免责声明。"),
-            latestAiConfigContent("prompt", "基于问卷输入快照生成职业路径辅助建议，不输出录取、上岸、就业结果承诺。"),
+            latestAiConfigContent("report_template", "基于学生开放访谈素材直接写一篇完整自然语言报告，不要求输出评分、固定维度或固定行动计划。"),
+            latestAiConfigContent("prompt", "像读完访谈记录的咨询老师一样综合判断学生经历、动机、约束、情绪压力、资源条件和未说透的矛盾；报告只供辅助决策，不输出录取、上岸、就业结果承诺。"),
             latestAiConfigContent("disclaimer", "AI 报告仅供辅助决策，不替代学生最终选择。"),
             fallback
         );
@@ -3105,9 +3031,11 @@ public class CompassService {
     return "AI 报告正在生成，请稍后刷新状态";
   }
 
-  private InterviewResponse fallbackInterview(List<Map<String, String>> messages) {
-    Map<String, Object> answers = extractInterviewAnswers(messages);
+  private InterviewResponse fallbackInterview(List<Map<String, String>> messages, StudentProfile profile) {
+    Map<String, Object> answers = extractInterviewAnswers(messages, profile);
     List<String> explorationTopics = explorationTopics(answers, messages);
+    List<String> decisionSignals = fallbackDecisionSignals(answers, messages);
+    String profileSummary = String.valueOf(answers.getOrDefault("profileSummary", "目前素材还不完整，但已开始记录你的经历、偏好和现实约束。"));
     int completion = interviewCompletion(messages, answers);
     boolean ready = StringUtils.hasText(userNarrative(messages)) && (completion >= 45 || userMessageCount(messages) >= 2);
     String assistantMessage;
@@ -3118,40 +3046,33 @@ public class CompassService {
     } else {
       assistantMessage = nextFallbackQuestion(explorationTopics);
     }
-    return new InterviewResponse(assistantMessage, answers, completion, ready, explorationTopics);
+    return new InterviewResponse(assistantMessage, answers, profileSummary, decisionSignals, completion, ready, explorationTopics);
   }
 
-  private Map<String, Object> extractInterviewAnswers(List<Map<String, String>> messages) {
+  private Map<String, Object> extractInterviewAnswers(List<Map<String, String>> messages, StudentProfile profile) {
     String text = userNarrative(messages);
-    int employment = pathScoreFromText(
-        text,
-        List.of("就业", "工作", "实习", "校招", "offer", "赚钱", "收入", "实践"),
-        List.of("不想就业", "不想工作", "不急着工作", "不考虑就业", "不想校招", "先不工作"),
-        3
-    );
-    int civil = pathScoreFromText(
-        text,
-        List.of("考公", "公务员", "事业编", "编制", "稳定", "体制"),
-        List.of("不想考公", "不考虑考公", "排斥体制", "不想进体制", "不喜欢稳定", "不想稳定"),
-        3
-    );
-    int postgraduate = pathScoreFromText(
-        text,
-        List.of("考研", "研究生", "读研", "升学", "导师", "科研"),
-        List.of("不想考研", "不考虑考研", "不想读研", "不想升学", "读研没兴趣", "不想科研"),
-        3
-    );
-    return Map.of(
-        "academic", pickText(text, List.of("成绩", "绩点", "排名", "挂科"), "待补充学业成绩"),
-        "certificates", pickText(text, List.of("英语", "四级", "六级", "证书", "技能"), "待补充英语与证书"),
-        "project", pickText(text, List.of("项目", "实习", "科研", "竞赛", "论文"), "待补充项目/实习经历"),
-        "constraints", pickText(text, List.of("家庭", "经济", "压力", "时间", "父母", "学费"), "待补充现实约束"),
-        "city", pickText(text, List.of("城市", "上海", "北京", "广州", "深圳", "杭州", "家乡"), "待补充目标城市"),
-        "riskPreference", text.contains("稳定") || text.contains("保守") ? "低" : text.contains("冒险") || text.contains("高薪") ? "高" : "中",
-        "employmentInterest", employment,
-        "civilInterest", civil,
-        "postgraduateInterest", postgraduate
-    );
+    Map<String, Object> answers = new LinkedHashMap<>();
+    answers.put("rawNarrative", trimText(text, 1200));
+    answers.put("sourceMessages", messages == null ? List.of() : messages);
+    if (profile != null) {
+      answers.put("studentContext", Map.of(
+          "college", valueOr(profile.college(), ""),
+          "major", valueOr(profile.major(), "")
+      ));
+    }
+    answers.put("profileSummary", StringUtils.hasText(text)
+        ? trimText("已记录学生原始表达，等待 AI 基于完整语境整理学生画像和判断线索：" + text.replaceAll("\\s+", " "), 260)
+        : "尚未形成完整学生画像，需要继续通过开放访谈补充。");
+    answers.put("decisionSignals", fallbackDecisionSignals(answers, messages));
+    return answers;
+  }
+
+  private List<String> fallbackDecisionSignals(Map<String, Object> answers, List<Map<String, String>> messages) {
+    String text = userNarrative(messages);
+    if (!StringUtils.hasText(text)) {
+      return List.of("等待学生补充原始叙述");
+    }
+    return List.of("已保留原始叙述，具体画像和路径判断交由 AI 综合整理");
   }
 
   private String userNarrative(List<Map<String, String>> messages) {
@@ -3171,89 +3092,21 @@ public class CompassService {
   private int interviewCompletion(List<Map<String, String>> messages, Map<String, Object> answers) {
     String text = userNarrative(messages);
     if (!StringUtils.hasText(text)) return 0;
-    int signals = 0;
-    if (hasAnswer(answers, "academic") || hasAnswer(answers, "certificates")) signals++;
-    if (hasAnswer(answers, "project")) signals++;
-    if (hasAnswer(answers, "constraints") || hasAnswer(answers, "city")) signals++;
-    if (containsAny(text, List.of("稳定", "成长", "收入", "风险", "压力", "焦虑", "喜欢", "不喜欢", "担心", "父母"))) signals++;
-    if (containsAny(text, List.of("就业", "工作", "实习", "校招", "考公", "公务员", "考研", "读研", "升学"))) signals++;
     int lengthBoost = Math.min(30, text.length() / 6);
     int messageBoost = Math.min(15, userMessageCount(messages) * 5);
-    return Math.min(100, 20 + signals * 10 + lengthBoost + messageBoost);
+    return Math.min(100, 20 + lengthBoost + messageBoost);
   }
 
   private List<String> explorationTopics(Map<String, Object> answers, List<Map<String, String>> messages) {
     String text = userNarrative(messages);
-    List<String> topics = new ArrayList<>();
     if (!StringUtils.hasText(text)) {
-      topics.add("最近最困扰你的选择");
-      topics.add("一段有代表性的项目、实习或学习经历");
-      topics.add("城市、家庭、收入和成长的取舍");
-      return topics;
+      return List.of("最近最困扰你的选择", "一段有代表性的经历", "必须考虑的现实条件");
     }
-    if (!hasAnswer(answers, "academic") && !hasAnswer(answers, "certificates")) {
-      topics.add("学业基础和证书技能");
-    }
-    if (!hasAnswer(answers, "project")) {
-      topics.add("项目、实习或让你有成就感的经历");
-    }
-    if (!hasAnswer(answers, "constraints") && !hasAnswer(answers, "city")) {
-      topics.add("城市、家庭、经济和时间约束");
-    }
-    if (!containsAny(text, List.of("稳定", "成长", "收入", "风险", "压力", "焦虑", "喜欢", "不喜欢", "父母"))) {
-      topics.add("你更在意稳定性、成长速度还是收入上限");
-    }
-    return topics.stream().limit(3).toList();
-  }
-
-  private boolean hasAnswer(Map<String, Object> answers, String key) {
-    Object value = answers.get(key);
-    if (value instanceof Number number) return number.intValue() > 0;
-    return value != null && StringUtils.hasText(String.valueOf(value)) && !String.valueOf(value).startsWith("待补充");
+    return List.of("还想补充的重要背景", "最真实的顾虑或期待", "希望 AI 重点参考的经历");
   }
 
   private String nextFallbackQuestion(List<String> explorationTopics) {
-    if (explorationTopics == null || explorationTopics.isEmpty()) {
-      return "我先把你刚才说的内容记下来。接下来你可以随便补充一个最真实的顾虑，比如家里期待、城市选择、怕走错路，或者某段经历让你觉得自己更适合什么。";
-    }
-    if (explorationTopics.stream().anyMatch(topic -> topic.contains("学业") || topic.contains("证书"))) {
-      return "我先把你已经提到的部分当作有效信息。接下来如果方便，可以补一两个背景：成绩或英语/证书大概是什么状态？不确定也没关系，可以直接说你最担心的地方。";
-    }
-    if (explorationTopics.stream().anyMatch(topic -> topic.contains("项目") || topic.contains("实习") || topic.contains("经历"))) {
-      return "你可以讲一段经历来帮我判断：项目、实习、课程设计、社团、竞赛都行，重点不是写得完整，而是你在里面更享受解决问题、跟人协作，还是更喜欢确定性的任务。";
-    }
-    if (explorationTopics.stream().anyMatch(topic -> topic.contains("城市") || topic.contains("家庭") || topic.contains("经济") || topic.contains("时间"))) {
-      return "现实约束也会影响路径选择。你可以随便说说城市、家庭期待、经济压力、时间窗口，或者有没有什么“必须考虑”的条件。";
-    }
-    return "那我们继续从真实感受出发：最近想到未来选择时，最让你纠结的是稳定、成长、收入、城市，还是怕投入一条路后发现不适合？";
-  }
-
-  private int pathScoreFromText(String text, List<String> positiveKeywords, List<String> negativeKeywords, int fallback) {
-    int score = fallback;
-    for (String keyword : positiveKeywords) {
-      if (text.contains(keyword)) score++;
-    }
-    for (String keyword : negativeKeywords) {
-      if (text.contains(keyword)) score -= 2;
-    }
-    return Math.max(1, Math.min(5, score));
-  }
-
-  private boolean containsAny(String text, List<String> keywords) {
-    return StringUtils.hasText(text) && keywords.stream().anyMatch(text::contains);
-  }
-
-  private String pickText(String text, List<String> keywords, String fallback) {
-    if (!StringUtils.hasText(text)) return fallback;
-    for (String keyword : keywords) {
-      int index = text.indexOf(keyword);
-      if (index >= 0) {
-        int start = Math.max(0, index - 24);
-        int end = Math.min(text.length(), index + 80);
-        return text.substring(start, end).replaceAll("\\s+", " ").trim();
-      }
-    }
-    return fallback;
+    return "我先把你刚才说的内容记下来。接下来你可以继续补充任何你觉得会影响选择的背景、经历、顾虑或期待，不需要按固定维度回答。";
   }
 
   private CrawlCandidateItem mapCandidate(ResultSet rs) throws java.sql.SQLException {
@@ -3321,6 +3174,8 @@ public class CompassService {
         Instant.now().toString(),
         ranked,
         buildDimensions(employment, civil, postgraduate, answers),
+        fallbackNarrativeReport(answers, ranked),
+        String.valueOf(answers.getOrDefault("profileSummary", "当前学生画像仍需继续补充，报告先基于已有问卷和访谈素材生成。")),
         "当前输入显示你需要在确定性、成长性和短期执行反馈之间做平衡。系统建议以最高匹配路径为主线，同时保留分差较小路径作为备选。",
         List.of("路径分差较小时容易多线投入过散", "公开信息更新频繁，需要定期复核来源", "家庭、城市和经济约束可能改变最优排序"),
         List.of("主路径每周至少投入 4 个固定时间块", "备选路径每周保留 1 至 2 个低成本验证动作", "两周一次复核岗位/院校/考试窗口"),
@@ -3338,33 +3193,35 @@ public class CompassService {
     );
   }
 
+  private String fallbackNarrativeReport(Map<String, Object> answers, List<Score> ranked) {
+    String profile = String.valueOf(answers.getOrDefault("profileSummary", "目前素材还不完整，但已能形成初步判断。"));
+    Score top = ranked.isEmpty() ? new Score("就业", 0, "第一推荐", List.of()) : ranked.getFirst();
+    String raw = String.valueOf(answers.getOrDefault("rawNarrative", ""));
+    return """
+        综合来看，这份报告会先把你已经表达出的经历、偏好和现实约束放在一起判断，而不是只依据单一分数。%s
+
+        目前系统给出的第一主线是%s。这个判断并不意味着其他路径不重要，而是表示在已有信息下，它更适合作为接下来 30 到 90 天的验证重点。你仍然需要保留备选路径，尤其是在信息还不完整、家庭或城市约束还没有完全说清楚的时候。
+
+        接下来最重要的不是立刻做不可逆选择，而是用低成本动作验证判断：把已有项目、实习、成绩、证书、城市偏好和家庭期待整理成清单；同时对主路径做真实信息核对，例如岗位、院校、考试窗口、材料门槛或招聘反馈。%s
+        """.formatted(
+        profile,
+        top.path(),
+        StringUtils.hasText(raw) ? "我会继续保留你原始表达中的细节，后续追问可以围绕这些细节进一步修正判断。" : "如果后续补充更多个人经历，报告排序和建议也应随之更新。"
+    ).strip();
+  }
+
   private List<DimensionScore> buildDimensions(int employment, int civil, int postgraduate, Map<String, Object> answers) {
-    String all = answers == null ? "" : answers.toString();
-    int projectBonus = containsAny(all, List.of("项目", "实习", "竞赛", "作品")) ? 6 : 0;
-    int academicBonus = containsAny(all, List.of("绩点", "成绩", "排名", "论文", "科研")) ? 6 : 0;
-    int stabilityBonus = containsAny(all, List.of("稳定", "编制", "公务员", "事业编")) ? 6 : 0;
-    int cityPenalty = containsAny(all, List.of("家乡", "离家近", "城市限制", "地域")) ? 5 : 0;
-    int economicPressure = containsAny(all, List.of("经济", "收入", "赚钱", "学费", "压力")) ? 6 : 0;
     return List.of(
-        new DimensionScore("确定性", clamp(civil + 10 + stabilityBonus), clamp(postgraduate - 4 + academicBonus), clamp(employment - 6 + projectBonus - cityPenalty)),
-        new DimensionScore("成长性", clamp(civil - 4), clamp(postgraduate + 12 + academicBonus), clamp(employment + 8 + projectBonus)),
-        new DimensionScore("现金流", clamp(civil - 8), clamp(postgraduate - 16 - economicPressure), clamp(employment + 12 + economicPressure)),
-        new DimensionScore("准备周期", clamp(civil + 2), clamp(postgraduate + 6), clamp(employment - 4 + projectBonus)),
-        new DimensionScore("信息透明", clamp(civil + 4), clamp(postgraduate + academicBonus), clamp(employment - 2 + projectBonus))
+        new DimensionScore("确定性", clamp(civil + 10), clamp(postgraduate - 4), clamp(employment - 6)),
+        new DimensionScore("成长性", clamp(civil - 4), clamp(postgraduate + 12), clamp(employment + 8)),
+        new DimensionScore("现金流", clamp(civil - 8), clamp(postgraduate - 16), clamp(employment + 12)),
+        new DimensionScore("准备周期", clamp(civil + 2), clamp(postgraduate + 6), clamp(employment - 4)),
+        new DimensionScore("信息透明", clamp(civil + 4), clamp(postgraduate), clamp(employment - 2))
     );
   }
 
   private int scoreFromAnswers(Map<String, Object> answers, String path, int fallback) {
-    Object exact = answers.get(path + "Interest");
-    if (exact instanceof Number number) {
-      return fallback + number.intValue() * 4;
-    }
-    String all = answers.toString();
-    int bonus = all.contains(path) ? 8 : 0;
-    if ("civil".equals(path) && all.contains("稳定")) bonus += 6;
-    if ("postgraduate".equals(path) && all.contains("学历")) bonus += 6;
-    if ("employment".equals(path) && (all.contains("实习") || all.contains("项目"))) bonus += 6;
-    return fallback + bonus;
+    return fallback;
   }
 
   private void validateAuth(AuthRequest request) {
@@ -3394,7 +3251,7 @@ public class CompassService {
       throw new IllegalArgumentException("姓名为 2 至 20 个字符");
     }
     if (!StringUtils.hasText(studentNo) || !studentNo.matches("\\d{10}")) {
-      throw new IllegalArgumentException("学号必须从学校邮箱前 10 位数字自动识别");
+      throw new IllegalArgumentException("学号必须为 10 位数字");
     }
     Integer duplicated = jdbc.queryForObject(
         "select count(*) from student_account where student_no = ? and id <> ?",
@@ -3408,11 +3265,12 @@ public class CompassService {
     if (!StringUtils.hasText(request.college()) || !StringUtils.hasText(request.major())) {
       throw new IllegalArgumentException("学院和专业不能为空");
     }
-    if (!request.major().matches("[\\u4e00-\\u9fa5]{2,40}")) {
-      throw new IllegalArgumentException("专业只能填写 2 至 40 个中文字符");
+    List<String> majors = USST_COLLEGE_MAJORS.get(request.college());
+    if (majors == null) {
+      throw new IllegalArgumentException("请选择上海理工大学有效学院");
     }
-    if (!graduationYears.contains(request.graduationYear())) {
-      throw new IllegalArgumentException("毕业年份不在后台配置的有效范围内：" + String.join("、", graduationYears));
+    if (!majors.contains(request.major())) {
+      throw new IllegalArgumentException("所选专业不属于当前学院");
     }
     if (!StringUtils.hasText(request.phone()) || !request.phone().matches("1\\d{10}")) {
       throw new IllegalArgumentException("手机号应为中国大陆 11 位手机号");
@@ -3420,10 +3278,42 @@ public class CompassService {
   }
 
   private void validateAssessment(Map<String, Object> answers) {
-    List<String> missing = REQUIRED_QUESTION_KEYS.stream().filter(key -> !answers.containsKey(key)).toList();
-    if (!missing.isEmpty()) {
-      throw new IllegalArgumentException("问卷存在未完成项：" + String.join("、", missing));
+    if (answers == null || answers.isEmpty() || answers.values().stream().noneMatch(this::hasMeaningfulAnswerValue)) {
+      throw new IllegalArgumentException("访谈素材为空，请先完成 AI 访谈");
     }
+  }
+
+  private Map<String, Object> openAssessmentAnswers(Map<String, Object> answers) {
+    if (answers == null || answers.isEmpty()) return Map.of();
+    Map<String, Object> open = new LinkedHashMap<>();
+    answers.forEach((key, value) -> {
+      if (StringUtils.hasText(key) && !isLegacyQuestionnaireKey(key) && hasMeaningfulAnswerValue(value)) {
+        open.put(key, value);
+      }
+    });
+    return open;
+  }
+
+  private boolean isLegacyQuestionnaireKey(String key) {
+    return List.of(
+        "academic",
+        "certificates",
+        "project",
+        "constraints",
+        "city",
+        "riskPreference",
+        "employmentInterest",
+        "civilInterest",
+        "postgraduateInterest"
+    ).contains(key);
+  }
+
+  private boolean hasMeaningfulAnswerValue(Object value) {
+    if (value == null) return false;
+    if (value instanceof String text) return StringUtils.hasText(text);
+    if (value instanceof List<?> list) return !list.isEmpty();
+    if (value instanceof Map<?, ?> map) return !map.isEmpty();
+    return true;
   }
 
   private void validatePost(PostRequest request) {
@@ -3505,10 +3395,14 @@ public class CompassService {
     }
   }
 
+  private void ensureLlmAvailable() {
+    llmClient.requireAvailable();
+  }
+
   private void requireCompletedStudent(AuthUser user) {
     StudentProfile profile = me(user);
     if (!"已完成引导".equals(profile.status())) {
-      throw new IllegalArgumentException("请先完成基础档案和深度问卷");
+      throw new IllegalArgumentException("请先完成基础档案和 AI 访谈");
     }
   }
 
@@ -3517,50 +3411,6 @@ public class CompassService {
     if ("已禁用".equals(status) || "已注销".equals(status) || "注销中".equals(status)) {
       throw new IllegalArgumentException("当前账号状态不允许登录：" + status);
     }
-    Object lockedUntil = row.get("locked_until");
-    if (lockedUntil instanceof Timestamp timestamp && timestamp.toInstant().isAfter(Instant.now())) {
-      throw new IllegalArgumentException("连续登录失败次数过多，请在 10 分钟后重试");
-    }
-  }
-
-  private void registerLoginFailure(long id, Map<String, Object> row) {
-    int failures = row.get("login_failures") instanceof Number number ? number.intValue() + 1 : 1;
-    if (failures >= 5) {
-      jdbc.update("update student_account set login_failures = ?, locked_until = date_add(current_timestamp, interval 10 minute) where id = ?", failures, id);
-    } else {
-      jdbc.update("update student_account set login_failures = ? where id = ?", failures, id);
-    }
-  }
-
-  private void consumeVerificationCode(String email, String purpose, String code) {
-    if (!StringUtils.hasText(code)) throw new IllegalArgumentException("验证码不能为空");
-    List<Map<String, Object>> rows = jdbc.queryForList(
-        """
-        select id, code_hash, attempts, expires_at
-        from verification_code
-        where email = ? and purpose = ? and used_at is null
-        order by created_at desc limit 1
-        """,
-        email,
-        purpose
-    );
-    if (rows.isEmpty()) throw new IllegalArgumentException("验证码不存在或已失效");
-    Map<String, Object> row = rows.getFirst();
-    long id = ((Number) row.get("id")).longValue();
-    int attempts = ((Number) row.get("attempts")).intValue();
-    if (attempts >= 5) {
-      jdbc.update("update verification_code set used_at = current_timestamp where id = ?", id);
-      throw new IllegalArgumentException("验证码错误次数过多，请重新发送");
-    }
-    Timestamp expiresAt = (Timestamp) row.get("expires_at");
-    if (expiresAt.toInstant().isBefore(Instant.now())) {
-      throw new IllegalArgumentException("验证码已过期，请重新发送");
-    }
-    if (!security.verifyPassword(code, String.valueOf(row.get("code_hash")))) {
-      jdbc.update("update verification_code set attempts = attempts + 1 where id = ?", id);
-      throw new IllegalArgumentException("验证码错误");
-    }
-    jdbc.update("update verification_code set used_at = current_timestamp where id = ?", id);
   }
 
   private List<CommunityPost> queryCommunityPosts(boolean admin, String path, String type, String keyword, String sort) {
@@ -3799,18 +3649,18 @@ public class CompassService {
     return prefix;
   }
 
+  private String graduationYearFromStudentNo(String studentNo) {
+    if (!StringUtils.hasText(studentNo) || !studentNo.matches("\\d{10}")) {
+      return "";
+    }
+    int admissionYear = 2000 + Integer.parseInt(studentNo.substring(0, 2));
+    return String.valueOf(admissionYear + 4);
+  }
+
   private void validateEmailDomain(String email) {
     if (!studentEmailPattern.matcher(email).matches()) {
       throw new IllegalArgumentException("仅允许使用 10 位数字学号 + @st.usst.edu.cn 的学校邮箱");
     }
-  }
-
-  private String normalizePurpose(String purpose) {
-    if (!StringUtils.hasText(purpose)) return "register";
-    return switch (purpose) {
-      case "login", "reset_password", "register" -> purpose;
-      default -> throw new IllegalArgumentException("不支持的验证码用途");
-    };
   }
 
   private String normalizeInteraction(String type) {

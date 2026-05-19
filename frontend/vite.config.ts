@@ -17,7 +17,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": "http://localhost:8080",
-      "/admin": "http://localhost:8080",
+      "^/admin/(auth|dashboard|contents|content|sources|community|paths|users|crawl|charts|tags|ai|reports|audits)(/|\\?|$)": "http://localhost:8080",
       "/templates": "http://localhost:8080"
     }
   }

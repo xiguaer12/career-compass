@@ -1,12 +1,10 @@
 package com.careercompass.service;
 
-import com.careercompass.model.Dtos.ActionPlan;
 import com.careercompass.model.Dtos.AiAnswer;
 import com.careercompass.model.Dtos.AiQuestion;
 import com.careercompass.model.Dtos.AiReport;
-import com.careercompass.model.Dtos.DimensionScore;
 import com.careercompass.model.Dtos.InterviewResponse;
-import com.careercompass.model.Dtos.Score;
+import com.careercompass.model.Dtos.StudentProfile;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -16,8 +14,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
@@ -57,6 +54,12 @@ public class LlmClient {
     return enabled && StringUtils.hasText(apiKey);
   }
 
+  public void requireAvailable() {
+    if (!available()) {
+      throw new IllegalStateException("大模型服务未启用或未配置 API Key");
+    }
+  }
+
   public AiReport generateReport(
       long id,
       Map<String, Object> answers,
@@ -68,57 +71,67 @@ public class LlmClient {
       String disclaimer,
       AiReport fallback
   ) {
-    if (!available()) return fallback;
-    Map<String, Object> payload = chatJson(
-        "你是高校毕业路径规划系统的 AI 报告生成器。必须只输出 JSON，不要输出 Markdown。",
+    requireAvailable();
+    String reportText = chatText(
         """
-        请基于学生深度问卷输入生成三路径辅助决策报告。
-        固定要求：
-        1. 覆盖考公、考研、就业三条路径，score 为 0-100 整数。
-        2. scores 必须按分数从高到低排序，rank 依次为第一推荐、第二推荐、第三推荐。
-        3. 第一推荐至少 3 条 reasons，其余路径至少 2 条 reasons，分别体现机会和约束。
-        4. dimensions 输出 4-6 个维度，subject 使用中文短语，civil/postgraduate/employment 都是 0-100 整数。
-        5. risks 输出 2-5 条。
-        6. alternatives 输出 1-3 条。
-        7. plan 必须包含 30 天、60 天、90 天三个阶段，每阶段至少 3 项 actions。
-        8. resources 至少 3 项。
-        9. disclaimer 使用给定免责声明。
+        你是高校毕业路径规划系统的 AI 报告生成器。
+        你的任务不是填写结构化问卷，也不是按固定维度打分，而是像一位认真读完访谈记录的咨询老师，直接写出一篇给学生阅读的自然语言报告。
+        可以使用小标题、段落、列表或 Markdown，但不要输出 JSON，不要输出字段名，不要为了适配系统而压缩判断。
+        """,
+        """
+        请基于学生开放访谈素材，直接生成一篇完整报告。
 
-        输出 JSON schema：
-        {
-          "summary": "string",
-          "scores": [{"path":"考公|考研|就业","score":0,"rank":"第一推荐","reasons":["string"]}],
-          "dimensions": [{"subject":"确定性","civil":0,"postgraduate":0,"employment":0}],
-          "risks": ["string"],
-          "alternatives": ["string"],
-          "plan": [{"stage":"30 天","actions":["string"]}],
-          "resources": ["string"],
-          "disclaimer": "string"
-        }
+        写作目标：
+        1. 先理解学生表达的全部上下文，包括经历、学业、项目/实习、家庭与经济约束、城市偏好、性格、情绪压力、资源条件、价值排序、隐含顾虑和未说透的矛盾。
+        2. 你可以比较考公、考研、就业，也可以提出更适合学生语境的判断框架；不要被固定路径、固定字段或固定分数限制。
+        3. 报告应该像真实咨询后的判断：有综合画像，有推理依据，有不确定性提醒，有下一步建议，但表达方式由你根据材料自由组织。
+        4. 不要承诺录取、上岸、就业结果；不要假装知道学生没有提到的事实。
+        5. 如果素材不足，请明确说明哪些判断只是初步假设，并自然地提出后续需要补充的信息。
+        6. 末尾保留免责声明，但不要为了免责声明牺牲报告正文的可读性。
 
-        报告模板：
+        报告模板（仅作可选参考，不构成字段或结构约束；如果其中要求评分、表格或固定模块，请忽略这些格式约束）：
         %s
 
-        提示词模板：
+        提示词模板（仅作写作方向参考；如果与“自由生成完整报告”冲突，以自由报告为准）：
         %s
 
         免责声明：
         %s
 
-        问卷输入 JSON：
+        开放访谈素材 JSON：
         %s
         """.formatted(reportTemplate, promptTemplate, disclaimer, toJson(answers))
     );
-    return reportFromPayload(id, payload, questionnaireVersion, templateVersion, promptVersion, fallback);
+    String summary = summaryFromReport(reportText);
+    return new AiReport(
+        id,
+        fallback.reportVersion(),
+        Instant.now().toString(),
+        List.of(),
+        List.of(),
+        reportText,
+        "",
+        summary,
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of(),
+        disclaimer,
+        questionnaireVersion,
+        templateVersion,
+        promptVersion,
+        "已完成"
+    );
   }
 
   public AiAnswer answer(AiReport report, AiQuestion question, String promptTemplate, AiAnswer fallback) {
-    if (!available() || report == null) return fallback;
+    requireAvailable();
+    if (report == null) return fallback;
     String asked = question == null || !StringUtils.hasText(question.question()) ? "如何安排下一步行动" : question.question();
     Map<String, Object> payload = chatJson(
-        "你是高校毕业路径规划系统的报告追问助手。必须只输出 JSON，不要输出 Markdown。",
+        "你是高校毕业路径规划系统的报告追问助手。为了让前端解析追问结果，请输出一个 JSON 对象；JSON 只用于接口传输，不代表报告正文需要结构化。不要在 JSON 外输出 Markdown。",
         """
-        请围绕已有 AI 报告回答学生追问。回答必须结构化、克制，不承诺录取、上岸或就业结果。
+        请围绕已有 AI 报告回答学生追问。回答要清晰、克制，不承诺录取、上岸或就业结果。
 
         输出 JSON schema：
         {
@@ -145,12 +158,17 @@ public class LlmClient {
     return answerFromPayload(payload, fallback);
   }
 
-  public InterviewResponse interview(List<Map<String, String>> messages, InterviewResponse fallback) {
-    if (!available()) return fallback;
+  public InterviewResponse interview(List<Map<String, String>> messages, StudentProfile profile, InterviewResponse fallback) {
+    requireAvailable();
+    String studentContext = studentContext(profile);
     Map<String, Object> payload = chatJson(
-        "你是高校职业路径开放访谈助手。你要像耐心的咨询老师一样接住学生表达，整理其中和职业选择有关的信号，再给出轻量引导。必须只输出 JSON，不要输出 Markdown。",
+        "你是高校职业路径开放访谈助手。你要像耐心的咨询老师一样接住学生表达，整理其中和职业选择有关的信号，再给出轻量引导。为了让前端保存对话状态，请输出一个 JSON 对象；JSON 只用于接口传输，answers 必须是开放素材，不是固定问卷。",
         """
         请根据已有对话继续访谈学生。目标是替代传统问卷，通过自然对话整理足够素材来生成考公、考研、就业三路径报告。
+        你需要自己理解学生提到的各方面情况，包括学业、项目、实习、家庭、城市、经济、性格、情绪、价值排序、机会资源、隐含顾虑和未说透的矛盾，再做综合整理。
+
+        学生基础档案（系统上下文，必须纳入理解，不要要求学生重复提供）：
+        %s
 
         访谈原则：
         1. 你的问题只是思维发散引导，不是必须逐题回答的问卷。学生说到问题之外的家庭、情绪、经历、城市、资源、担忧、偏好，都要主动加工整理进 answers。
@@ -159,35 +177,25 @@ public class LlmClient {
         4. 可以用例子、选择项和追问帮助表达，但不要要求学生给考公、考研、就业三条路打分，也不要直接问“三选一”。
         5. 不要承诺录取、上岸或就业结果。
         6. 当已有素材能生成有价值的初版报告时 readyToGenerate=true，并给出一句“可以先生成草案，后续还能继续补充”的确认说明；不要求所有字段完整。
-        7. answers 必须保持 requiredKeys 兼容；未知文本字段可用空字符串，三条路径意愿分只能根据叙述软推断，无法判断时填 3。
-        8. missingFields 字段不是缺失项，而是“可以继续探索的方向”，请输出中文短语，例如“项目和实习经历”“城市与家庭约束”，不要输出 requiredKeys 英文字段名。
-
-        requiredKeys：
-        academic, certificates, project, constraints, city, riskPreference,
-        employmentInterest, civilInterest, postgraduateInterest
-
-        answers 字段含义：
-        academic=学业成绩/排名/挂科情况描述；
-        certificates=英语、证书、技能证书；
-        project=科研/项目/实习/竞赛；
-        constraints=家庭、经济、时间、地域等现实约束；
-        city=目标城市或地域偏好；
-        riskPreference=风险偏好，低/中/高或具体说明；
-        employmentInterest/civilInterest/postgraduateInterest=1-5 的路径倾向软推断整数；只能从学生叙述中推断，禁止要求学生打分。
+        7. answers 是开放素材对象，不要按固定问卷字段填写，也不要输出 academic/certificates/project/city/riskPreference/employmentInterest 这类固定问卷键。
+        8. answers 可以由你自由组织字段，例如 rawNarrative、profileSummary、keyExperiences、valuesAndMotivation、constraintsAndEmotions、decisionSignals、pathHypotheses、openQuestions、openNotes；字段名可以按语义自行增加。
+        9. pathHypotheses 可以表达你对考公、考研、就业的初步假设和证据，但不要要求学生给路径打分，也不要把判断压成 1-5 分。
+        10. missingFields 字段不是缺失项，而是“可以继续探索的方向”，请输出中文短语，例如“项目和实习经历”“城市与家庭约束”，不要输出英文字段名。
 
         输出 JSON schema：
         {
           "assistantMessage": "string",
+          "profileSummary": "string",
+          "decisionSignals": ["string"],
           "answers": {
-            "academic": "string",
-            "certificates": "string",
-            "project": "string",
-            "constraints": "string",
-            "city": "string",
-            "riskPreference": "string",
-            "employmentInterest": 3,
-            "civilInterest": 3,
-            "postgraduateInterest": 3
+            "rawNarrative": "string",
+            "profileSummary": "string",
+            "keyExperiences": ["string"],
+            "valuesAndMotivation": ["string"],
+            "constraintsAndEmotions": ["string"],
+            "decisionSignals": ["string"],
+            "pathHypotheses": [{"path": "考公|考研|就业", "evidence": "string", "concern": "string"}],
+            "openNotes": {"任意中文键": "string"}
           },
           "completionPercent": 0,
           "readyToGenerate": false,
@@ -196,7 +204,7 @@ public class LlmClient {
 
         当前对话 JSON：
         %s
-        """.formatted(toJson(messages == null ? List.of() : messages))
+        """.formatted(studentContext, toJson(messages == null ? List.of() : messages))
     );
     return interviewFromPayload(payload, fallback);
   }
@@ -210,9 +218,9 @@ public class LlmClient {
       String rawText,
       Map<String, Object> fallback
   ) {
-    if (!available()) return fallback;
+    requireAvailable();
     Map<String, Object> payload = chatJson(
-        "你是高校毕业路径信息差分析助手。必须只输出 JSON，不要输出 Markdown。",
+        "你是高校毕业路径信息差分析助手。为了让后台审核队列解析候选资讯，请输出一个 JSON 对象，不要在 JSON 外输出 Markdown。",
         """
         请把公开网页内容加工为三路径页面的待审核候选资讯，目标是帮助学生打破信息差，而不是写泛泛新闻摘要。要求：
         1. 只根据原文内容提炼，不编造政策、时间、数字或结论。
@@ -244,6 +252,49 @@ public class LlmClient {
         """.formatted(sourceName, sourceType, preferredPath, url, rawTitle, trimForPrompt(rawText, 6000))
     );
     return crawlCandidateFromPayload(payload, fallback, preferredPath);
+  }
+
+  private String studentContext(StudentProfile profile) {
+    if (profile == null) return "未提供基础档案。";
+    return """
+        学院：%s
+        专业：%s
+        """.formatted(
+        stringValue(profile.college(), "未填写"),
+        stringValue(profile.major(), "未填写")
+    ).strip();
+  }
+
+  private String chatText(String systemPrompt, String userPrompt) {
+    try {
+      Map<String, Object> requestBody = Map.of(
+          "model", model,
+          "temperature", 0.7,
+          "messages", List.of(
+              Map.of("role", "system", "content", systemPrompt),
+              Map.of("role", "user", "content", userPrompt)
+          )
+      );
+      HttpRequest request = HttpRequest.newBuilder()
+          .uri(URI.create(baseUrl + "/chat/completions"))
+          .timeout(Duration.ofSeconds(timeoutSeconds))
+          .header("Authorization", "Bearer " + apiKey)
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofString(toJson(requestBody)))
+          .build();
+      HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() < 200 || response.statusCode() >= 300) {
+        throw new IllegalStateException("大模型接口返回 HTTP " + response.statusCode());
+      }
+      JsonNode root = objectMapper.readTree(response.body());
+      String content = root.path("choices").path(0).path("message").path("content").asText("");
+      if (!StringUtils.hasText(content)) {
+        throw new IllegalStateException("大模型未返回有效内容");
+      }
+      return content.trim();
+    } catch (Exception exception) {
+      throw new IllegalStateException("大模型调用失败：" + exception.getMessage(), exception);
+    }
   }
 
   private Map<String, Object> chatJson(String systemPrompt, String userPrompt) {
@@ -279,36 +330,6 @@ public class LlmClient {
     }
   }
 
-  private AiReport reportFromPayload(
-      long id,
-      Map<String, Object> payload,
-      String questionnaireVersion,
-      String templateVersion,
-      String promptVersion,
-      AiReport fallback
-  ) {
-    List<Score> scores = scoreList(payload.get("scores"), fallback.scores());
-    List<DimensionScore> dimensions = dimensionList(payload.get("dimensions"), fallback.dimensions());
-    List<ActionPlan> plan = planList(payload.get("plan"), fallback.plan());
-    return new AiReport(
-        id,
-        fallback.reportVersion(),
-        Instant.now().toString(),
-        scores,
-        dimensions,
-        stringValue(payload.get("summary"), fallback.summary()),
-        stringList(payload.get("risks"), fallback.risks(), 5),
-        stringList(payload.get("alternatives"), fallback.alternatives(), 3),
-        plan,
-        stringList(payload.get("resources"), fallback.resources(), 6),
-        stringValue(payload.get("disclaimer"), fallback.disclaimer()),
-        questionnaireVersion,
-        templateVersion,
-        promptVersion,
-        "已完成"
-    );
-  }
-
   private AiAnswer answerFromPayload(Map<String, Object> payload, AiAnswer fallback) {
     return new AiAnswer(
         stringValue(payload.get("questionUnderstanding"), fallback.questionUnderstanding()),
@@ -321,9 +342,11 @@ public class LlmClient {
 
   private InterviewResponse interviewFromPayload(Map<String, Object> payload, InterviewResponse fallback) {
     Map<String, Object> answers = payload.get("answers") instanceof Map<?, ?> raw
-        ? normalizeInterviewAnswers(raw)
+        ? normalizeInterviewAnswers(raw, fallback.answers())
         : fallback.answers();
     List<String> missing = explorationList(payload.get("missingFields"), fallback.missingFields(), 12);
+    List<String> decisionSignals = stringList(payload.get("decisionSignals"), stringList(answers.get("decisionSignals"), fallback.decisionSignals(), 12), 12);
+    String profileSummary = stringValue(payload.get("profileSummary"), stringValue(answers.get("profileSummary"), fallback.profileSummary()));
     int llmPercent = Math.max(0, Math.min(100, intValue(payload.get("completionPercent"), fallback.completionPercent())));
     int percent = Math.max(fallback.completionPercent(), llmPercent);
     boolean ready = booleanValue(payload.get("readyToGenerate"), fallback.readyToGenerate()) || fallback.readyToGenerate();
@@ -334,79 +357,38 @@ public class LlmClient {
     return new InterviewResponse(
         assistantMessage,
         answers,
+        profileSummary,
+        decisionSignals,
         percent,
         ready,
         missing
     );
   }
 
-  private Map<String, Object> normalizeInterviewAnswers(Map<?, ?> raw) {
-    return Map.of(
-        "academic", stringValue(raw.get("academic"), ""),
-        "certificates", stringValue(raw.get("certificates"), ""),
-        "project", stringValue(raw.get("project"), ""),
-        "constraints", stringValue(raw.get("constraints"), ""),
-        "city", stringValue(raw.get("city"), ""),
-        "riskPreference", stringValue(raw.get("riskPreference"), ""),
-        "employmentInterest", Math.max(1, Math.min(5, intValue(raw.get("employmentInterest"), 3))),
-        "civilInterest", Math.max(1, Math.min(5, intValue(raw.get("civilInterest"), 3))),
-        "postgraduateInterest", Math.max(1, Math.min(5, intValue(raw.get("postgraduateInterest"), 3)))
-    );
-  }
-
-  private List<Score> scoreList(Object value, List<Score> fallback) {
-    if (!(value instanceof List<?> rows) || rows.isEmpty()) return fallback;
-    List<Score> scores = new ArrayList<>();
-    for (Object row : rows) {
-      if (!(row instanceof Map<?, ?> map)) continue;
-      String path = stringValue(map.get("path"), "");
-      if (!List.of("考公", "考研", "就业").contains(path)) continue;
-      int score = Math.max(0, Math.min(100, intValue(map.get("score"), 0)));
-      List<String> reasons = stringList(map.get("reasons"), List.of(), 5);
-      scores.add(new Score(path, score, "", reasons.isEmpty() ? List.of("基于问卷输入形成该路径评分") : reasons));
-    }
-    if (scores.size() != 3) return fallback;
-    scores.sort(Comparator.comparingInt(Score::score).reversed());
-    List<Score> ranked = new ArrayList<>();
-    for (int index = 0; index < scores.size(); index++) {
-      Score score = scores.get(index);
-      String rank = index == 0 ? "第一推荐" : index == 1 ? "第二推荐" : "第三推荐";
-      ranked.add(new Score(score.path(), score.score(), rank, score.reasons()));
-    }
-    return ranked;
-  }
-
-  private List<DimensionScore> dimensionList(Object value, List<DimensionScore> fallback) {
-    if (!(value instanceof List<?> rows) || rows.isEmpty()) return fallback;
-    List<DimensionScore> dimensions = new ArrayList<>();
-    for (Object row : rows) {
-      if (!(row instanceof Map<?, ?> map)) continue;
-      String subject = stringValue(map.get("subject"), "");
-      if (!StringUtils.hasText(subject)) continue;
-      int civil = dimensionValue(map, "civil", "考公");
-      int postgraduate = dimensionValue(map, "postgraduate", "考研");
-      int employment = dimensionValue(map, "employment", "就业");
-      dimensions.add(new DimensionScore(subject, civil, postgraduate, employment));
-    }
-    return dimensions.size() >= 3 ? dimensions.stream().limit(6).toList() : fallback;
-  }
-
-  private int dimensionValue(Map<?, ?> map, String key, String chineseKey) {
-    return Math.max(0, Math.min(100, intValue(map.containsKey(key) ? map.get(key) : map.get(chineseKey), 0)));
-  }
-
-  private List<ActionPlan> planList(Object value, List<ActionPlan> fallback) {
-    if (!(value instanceof List<?> rows) || rows.isEmpty()) return fallback;
-    List<ActionPlan> plans = new ArrayList<>();
-    for (Object row : rows) {
-      if (!(row instanceof Map<?, ?> map)) continue;
-      String stage = stringValue(map.get("stage"), "");
-      List<String> actions = stringList(map.get("actions"), List.of(), 6);
-      if (StringUtils.hasText(stage) && actions.size() >= 3) {
-        plans.add(new ActionPlan(stage, actions));
+  private Map<String, Object> normalizeInterviewAnswers(Map<?, ?> raw, Map<String, Object> fallbackAnswers) {
+    Map<String, Object> answers = new LinkedHashMap<>(fallbackAnswers == null ? Map.of() : fallbackAnswers);
+    for (Map.Entry<?, ?> entry : raw.entrySet()) {
+      if (entry.getKey() == null || entry.getValue() == null) continue;
+      String key = String.valueOf(entry.getKey());
+      if (!isLegacyQuestionnaireKey(key)) {
+        answers.put(key, entry.getValue());
       }
     }
-    return plans.size() >= 3 ? plans : fallback;
+    return answers;
+  }
+
+  private boolean isLegacyQuestionnaireKey(String key) {
+    return List.of(
+        "academic",
+        "certificates",
+        "project",
+        "constraints",
+        "city",
+        "riskPreference",
+        "employmentInterest",
+        "civilInterest",
+        "postgraduateInterest"
+    ).contains(key);
   }
 
   private Map<String, Object> crawlCandidateFromPayload(Map<String, Object> payload, Map<String, Object> fallback, String preferredPath) {
@@ -445,18 +427,7 @@ public class LlmClient {
   }
 
   private String displayExplorationTopic(String topic) {
-    return switch (topic) {
-      case "academic" -> "学业基础";
-      case "certificates" -> "证书和技能";
-      case "project" -> "项目、实习或竞赛经历";
-      case "constraints" -> "家庭、经济和时间约束";
-      case "city" -> "城市和地域偏好";
-      case "riskPreference" -> "稳定性、成长和收入的取舍";
-      case "employmentInterest" -> "对就业路径的真实顾虑";
-      case "civilInterest" -> "对体制内路径的真实顾虑";
-      case "postgraduateInterest" -> "对继续升学的真实顾虑";
-      default -> topic;
-    };
+    return topic;
   }
 
   private boolean asksForPathScore(String message) {
@@ -497,6 +468,11 @@ public class LlmClient {
   private String trimToLength(String value, int limit) {
     String normalized = value == null ? "" : value.replaceAll("\\s+", " ").trim();
     return normalized.length() <= limit ? normalized : normalized.substring(0, limit);
+  }
+
+  private String summaryFromReport(String reportText) {
+    String normalized = trimToLength(reportText, 220);
+    return StringUtils.hasText(normalized) ? normalized : "AI 已生成开放式职业路径报告，请进入报告正文查看完整判断。";
   }
 
   private String extractJson(String content) {

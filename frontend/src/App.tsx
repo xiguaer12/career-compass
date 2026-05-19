@@ -92,7 +92,7 @@ import {
 } from "./data";
 import type { CommunityPost, PathInfo, TemplateResource } from "./types";
 
-type TabKey = "home" | "workspace" | "report" | "paths" | "charts" | "community" | "messages" | "me" | "admin";
+type TabKey = "home" | "workspace" | "report" | "paths" | "charts" | "community" | "messages" | "me";
 
 type PostDraft = {
   title: string;
@@ -137,7 +137,21 @@ type PathForm = {
   status: string;
 };
 
-const collegeOptions = ["外语学院", "光电学院", "管理学院", "能动学院", "沪江学院", "马克思主义学院", "机械学院"];
+const usstCollegeMajors: Record<string, string[]> = {
+  "能源与动力工程学院": ["过程装备与控制工程", "能源与动力工程", "新能源科学与工程", "储能科学与工程"],
+  "光电信息与计算机工程学院": ["测控技术与仪器", "电子信息工程", "电子科学与技术", "通信工程", "光电信息科学与工程", "自动化", "计算机科学与技术", "智能科学与技术", "数据科学与大数据技术"],
+  "管理学院": ["税收学", "金融学", "国际经济与贸易", "系统科学与工程", "人工智能", "交通工程", "管理科学", "信息管理与信息系统", "工商管理", "会计学", "公共事业管理", "工业工程"],
+  "机械工程学院": ["机械设计制造及其自动化", "车辆工程", "电气工程及其自动化", "机器人工程"],
+  "外语学院": ["英语", "德语", "日语"],
+  "环境与建筑学院": ["土木工程", "建筑环境与能源应用工程", "环境工程"],
+  "健康科学与工程学院": ["生物医学工程", "食品科学与工程", "食品质量与安全", "康复工程", "医学信息工程", "智能医学工程", "医学影像技术", "制药工程", "生物技术"],
+  "出版印刷与艺术设计学院": ["编辑出版学", "传播学", "广告学", "工业设计", "新媒体技术", "包装工程", "动画", "视觉传达设计", "环境设计", "产品设计", "包装设计"],
+  "理学院": ["数学与应用数学", "应用物理学"],
+  "材料与化学学院": ["材料成型及控制工程", "材料科学与工程", "应用化学"],
+  "中英国际学院": ["电子信息科学与技术（中英合作）", "机械设计制造及其自动化（中英合作）", "工商管理（中英合作）", "会展经济与管理"]
+};
+
+const collegeOptions = Object.keys(usstCollegeMajors);
 
 const emptyPostDraft: PostDraft = {
   title: "",
@@ -207,8 +221,8 @@ function studentNoFromEmail(email?: string) {
   return /^\d{10}$/.test(prefix) ? prefix : "";
 }
 
-function onlyChinese(value: string) {
-  return value.replace(/[^\u4e00-\u9fa5]/g, "");
+function majorsForCollege(college?: string) {
+  return college ? usstCollegeMajors[college] ?? [] : [];
 }
 
 function pathPageToInfo(page: PathPage): PathInfo {
@@ -288,8 +302,7 @@ const navItems: Array<{ key: TabKey; label: string; icon: React.ComponentType<{ 
   { key: "charts", label: "图表", icon: BarChart3 },
   { key: "community", label: "社区", icon: MessagesSquare },
   { key: "messages", label: "消息", icon: Bell },
-  { key: "me", label: "个人", icon: UserRound },
-  { key: "admin", label: "后台", icon: ShieldCheck }
+  { key: "me", label: "个人", icon: UserRound }
 ];
 
 const compactStats = [
@@ -300,6 +313,7 @@ const compactStats = [
 ];
 
 function App() {
+  const isAdminRoute = window.location.pathname.replace(/\/+$/, "") === "/admin";
   const [activeTab, setActiveTab] = useState<TabKey>("home");
   const [apiStatus, setApiStatus] = useState<"checking" | "up" | "down">("checking");
   const [session, setSession] = useState<Session | null>(null);
@@ -328,6 +342,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (isAdminRoute) return;
     const token = localStorage.getItem("career-compass-token");
     if (!token) return;
     authApi.me(token)
@@ -336,7 +351,7 @@ function App() {
         await refreshReportState(token);
       })
       .catch(() => localStorage.removeItem("career-compass-token"));
-  }, []);
+  }, [isAdminRoute]);
 
   async function refreshReportState(token: string) {
     const [latest, latestTask] = await Promise.all([
@@ -376,6 +391,10 @@ function App() {
     setReportTask(null);
   }
 
+  if (isAdminRoute) {
+    return <AdminShell apiStatus={apiStatus} />;
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="主导航">
@@ -413,7 +432,7 @@ function App() {
         </nav>
         <div className="sidebar-note">
           <LockKeyhole size={16} />
-          <span>学生与后台均使用登录凭证，关键操作留痕</span>
+          <span>学生端仅保留规划、报告、资料和社区功能</span>
         </div>
       </aside>
 
@@ -476,7 +495,52 @@ function App() {
         {activeTab === "me" && <MeView session={session} onLogin={() => setAuthOpen(true)} setNotice={setNotice} onLogout={() => {
           logout();
         }} />}
-        {activeTab === "admin" && <AdminView />}
+      </main>
+    </div>
+  );
+}
+
+function AdminShell({ apiStatus }: { apiStatus: "checking" | "up" | "down" }) {
+  return (
+    <div className="app-shell admin-shell">
+      <aside className="sidebar admin-sidebar" aria-label="后台导航">
+        <div className="brand">
+          <span className="brand-mark">
+            <ShieldCheck size={22} />
+          </span>
+          <div>
+            <strong>Career Compass</strong>
+            <span>后台管理控制台</span>
+          </div>
+        </div>
+        <div className="admin-side-panel">
+          <strong>独立后台</strong>
+          <span>审核、数据源、图表、用户与 AI 配置集中在此维护。</span>
+        </div>
+        <div className="sidebar-note">
+          <LockKeyhole size={16} />
+          <span>后台使用独立管理员凭证，与学生登录态分开保存</span>
+        </div>
+      </aside>
+
+      <main className="main admin-main">
+        <header className="topbar admin-topbar">
+          <div>
+            <p className="eyebrow">Career Compass Admin</p>
+            <h1>后台管理</h1>
+          </div>
+          <div className="topbar-actions">
+            <span className={`api-status ${apiStatus}`}>
+              <span />
+              {apiStatus === "up" ? "API 正常" : apiStatus === "down" ? "API 离线" : "API 检查中"}
+            </span>
+            <a className="secondary-button" href="/">
+              <ArrowLeft size={17} />
+              返回用户端
+            </a>
+          </div>
+        </header>
+        <AdminView />
       </main>
     </div>
   );
@@ -520,28 +584,23 @@ function Topbar({
 }
 
 function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (session: Session) => void }) {
-  const [mode, setMode] = useState<"login" | "register" | "codeLogin" | "reset">("login");
+  const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [code, setCode] = useState("");
-  const [codeHint, setCodeHint] = useState("");
+  const [registerProfile, setRegisterProfile] = useState({
+    name: "",
+    college: "",
+    major: "",
+    phone: "",
+    nickname: ""
+  });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const registerMajors = majorsForCollege(registerProfile.college);
 
-  async function sendCode() {
-    setLoading(true);
-    setError("");
-    try {
-      const purpose = mode === "register" ? "register" : mode === "reset" ? "reset_password" : "login";
-      const response = await authApi.sendCode(email, purpose);
-      setCodeHint(response.debugCode ? `开发模式验证码：${response.debugCode}` : "验证码已发送，请查收邮箱");
-      if (response.debugCode) setCode(response.debugCode);
-    } catch (exception) {
-      setError(exception instanceof Error ? exception.message : "验证码发送失败");
-    } finally {
-      setLoading(false);
-    }
+  function updateRegisterProfile(patch: Partial<typeof registerProfile>) {
+    setRegisterProfile((current) => ({ ...current, ...patch }));
   }
 
   async function submit() {
@@ -550,15 +609,12 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
     try {
       if (mode === "login") {
         onSession(await authApi.login(email, password));
-      } else if (mode === "register") {
-        onSession(await authApi.registerWithCode(email, password, code));
-      } else if (mode === "codeLogin") {
-        onSession(await authApi.loginByCode(email, code));
       } else {
-        if (!window.confirm("确认重置该账号密码？")) return;
-        await authApi.resetPassword(email, code, password);
-        setMode("login");
-        setError("密码已重置，请使用新密码登录");
+        onSession(await authApi.register({
+          email,
+          password,
+          ...registerProfile
+        }));
       }
     } catch (exception) {
       setError(exception instanceof Error ? exception.message : "操作失败");
@@ -569,57 +625,73 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
 
   return (
     <div className="modal-backdrop">
-      <section className="auth-modal">
+      <section className={`auth-modal ${mode === "register" ? "register-auth-modal" : ""}`}>
         <div className="section-title">
           <div>
             <UserRoundCheck size={18} />
-            <h3>{mode === "login" ? "学生登录" : mode === "register" ? "学校邮箱注册" : mode === "codeLogin" ? "验证码登录" : "找回密码"}</h3>
+            <h3>{mode === "login" ? "学生登录" : "学校邮箱注册"}</h3>
           </div>
           <button className="text-button" onClick={onClose}>关闭</button>
         </div>
         <div className="segmented auth-switch">
           <button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>登录</button>
           <button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>注册</button>
-          <button className={mode === "codeLogin" ? "active" : ""} onClick={() => setMode("codeLogin")}>验证码</button>
-          <button className={mode === "reset" ? "active" : ""} onClick={() => setMode("reset")}>找回</button>
         </div>
         <label>
           <span>学校邮箱</span>
           <input value={email} onChange={(event) => setEmail(event.target.value)} />
         </label>
-        {mode !== "codeLogin" && (
-          <label>
-            <span>{mode === "reset" ? "新密码" : "密码"}</span>
-            <div className="inline-control">
-              <input
-                type={showPassword ? "text" : "password"}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-              <button
-                className="icon-button"
-                title={showPassword ? "隐藏密码" : "显示密码"}
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-              >
-                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-          </label>
+        <label>
+          <span>密码</span>
+          <div className="inline-control">
+            <input
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+            <button
+              className="icon-button"
+              title={showPassword ? "隐藏密码" : "显示密码"}
+              type="button"
+              onClick={() => setShowPassword(!showPassword)}
+            >
+              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+        </label>
+        {mode === "register" && (
+          <div className="register-profile-grid">
+            <label>
+              <span>姓名</span>
+              <input value={registerProfile.name} onChange={(event) => updateRegisterProfile({ name: event.target.value })} />
+            </label>
+            <label>
+              <span>手机号</span>
+              <input value={registerProfile.phone} onChange={(event) => updateRegisterProfile({ phone: event.target.value.replace(/\D/g, "").slice(0, 11) })} />
+            </label>
+            <label>
+              <span>学院</span>
+              <select value={registerProfile.college} onChange={(event) => updateRegisterProfile({ college: event.target.value, major: "" })}>
+                <option value="">请选择学院</option>
+                {collegeOptions.map((college) => <option value={college} key={college}>{college}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>专业</span>
+              <select value={registerProfile.major} onChange={(event) => updateRegisterProfile({ major: event.target.value })} disabled={!registerProfile.college}>
+                <option value="">请选择专业</option>
+                {registerMajors.map((major) => <option value={major} key={major}>{major}</option>)}
+              </select>
+            </label>
+            <label className="full-span">
+              <span>昵称</span>
+              <input value={registerProfile.nickname} placeholder="可选，不填写则前台显示匿名用户" onChange={(event) => updateRegisterProfile({ nickname: event.target.value })} />
+            </label>
+          </div>
         )}
-        {mode !== "login" && (
-          <label>
-            <span>邮箱验证码</span>
-            <div className="inline-control">
-              <input value={code} onChange={(event) => setCode(event.target.value)} />
-              <button className="secondary-button" onClick={sendCode} disabled={loading}>发送</button>
-            </div>
-          </label>
-        )}
-        {codeHint && <p className="helper-text">{codeHint}</p>}
         {error && <p className="form-error">{error}</p>}
         <button className="primary-button full-width" onClick={submit} disabled={loading}>
-          {loading ? "处理中..." : mode === "login" ? "登录" : mode === "register" ? "注册" : mode === "codeLogin" ? "验证码登录" : "重置密码"}
+          {loading ? "处理中..." : mode === "login" ? "登录" : "注册并开始访谈"}
         </button>
       </section>
     </div>
@@ -645,25 +717,26 @@ function HomeView({ report, onNavigate }: { report: AiReport | null; onNavigate:
   const topScore = report?.scores?.length
     ? [...report.scores].sort((a, b) => b.score - a.score)[0]
     : null;
+  const hasOpenReport = Boolean(report?.narrativeReport?.trim());
   const guideSteps = [
     {
       icon: ClipboardList,
-      title: "完善基础档案",
-      description: "先补齐学院、专业、联系方式等必要信息，让后续访谈有基本上下文。",
+      title: "注册并填写档案",
+      description: "注册时填写学院、专业和联系方式，学号由学校邮箱自动识别。",
       target: "workspace" as TabKey,
-      action: "进入工作台"
+      action: "开始注册"
     },
     {
       icon: Sparkles,
       title: "进行 AI 访谈",
-      description: "用对话替代硬填问卷，整理你的课程、实习、家庭约束和偏好。",
+      description: "用开放对话整理你的课程、实习、家庭约束和真实顾虑。",
       target: "workspace" as TabKey,
       action: "开始整理"
     },
     {
       icon: FileText,
       title: "查看规划报告",
-      description: "报告会把三条路径的适配点、风险和近期行动计划放在一起。",
+      description: "报告会基于访谈素材生成完整正文，综合整理适配点、风险和下一步建议。",
       target: "report" as TabKey,
       action: "查看报告"
     }
@@ -699,8 +772,8 @@ function HomeView({ report, onNavigate }: { report: AiReport | null; onNavigate:
           <div className="home-next-header">
             <Compass size={24} />
             <div>
-              <strong>{topScore ? `${topScore.path} ${topScore.score}` : "先建立你的规划上下文"}</strong>
-              <span>{topScore ? "当前报告中的最高匹配方向" : "从基础档案和 AI 访谈开始"}</span>
+              <strong>{topScore ? `${topScore.path} ${topScore.score}` : hasOpenReport ? "已生成开放报告" : "先建立你的规划上下文"}</strong>
+              <span>{topScore ? "当前报告中的最高匹配方向" : hasOpenReport ? "进入报告页查看完整正文" : "从基础档案和 AI 访谈开始"}</span>
             </div>
           </div>
           <div className="home-step-list">
@@ -754,7 +827,7 @@ function HomeView({ report, onNavigate }: { report: AiReport | null; onNavigate:
           <div className="notice-list">
             <div className="notice-item">
               <CheckCircle2 size={16} />
-              <span><strong>先补基础信息</strong>学号、学院、专业等信息用于绑定个人档案。</span>
+              <span><strong>注册时填档案</strong>学院、专业等信息会直接绑定个人档案，学号由学校邮箱识别。</span>
             </div>
             <div className="notice-item">
               <CheckCircle2 size={16} />
@@ -786,19 +859,15 @@ function WorkspaceView({
 }) {
   const emptyProfile = {
     name: "",
-    studentNo: "",
     college: "",
     major: "",
-    graduationYear: "",
     phone: "",
     nickname: ""
   };
   const [profile, setProfile] = useState({
     name: session?.profile.name || "",
-    studentNo: studentNoFromEmail(session?.profile.email) || session?.profile.studentNo || "",
     college: session?.profile.college || "",
     major: session?.profile.major || "",
-    graduationYear: session?.profile.graduationYear || "",
     phone: session?.profile.phone || "",
     nickname: session?.profile.nickname === "Compass 用户" ? "" : session?.profile.nickname || ""
   });
@@ -813,10 +882,13 @@ function WorkspaceView({
   const [interviewProgress, setInterviewProgress] = useState(0);
   const [readyToGenerate, setReadyToGenerate] = useState(false);
   const [interviewExploreTopics, setInterviewExploreTopics] = useState<string[]>([]);
+  const [interviewProfileSummary, setInterviewProfileSummary] = useState("");
+  const [interviewDecisionSignals, setInterviewDecisionSignals] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [interviewLoading, setInterviewLoading] = useState(false);
   const [workbench, setWorkbench] = useState<WorkbenchResponse | null>(null);
   const [reportMessage, setReportMessage] = useState("");
+  const profileMajors = majorsForCollege(profile.college);
 
   useEffect(() => {
     if (!session) {
@@ -825,10 +897,8 @@ function WorkspaceView({
     }
     setProfile({
       name: session.profile.name || "",
-      studentNo: studentNoFromEmail(session.profile.email) || session.profile.studentNo || "",
       college: session.profile.college || "",
       major: session.profile.major || "",
-      graduationYear: session.profile.graduationYear || "",
       phone: session.profile.phone || "",
       nickname: session.profile.nickname === "Compass 用户" ? "" : session.profile.nickname || ""
     });
@@ -837,6 +907,8 @@ function WorkspaceView({
         if (draft?.answers) {
           setAssessment(draft.answers);
           setInterviewProgress(draft.completionPercent || 0);
+          setInterviewProfileSummary(typeof draft.answers.profileSummary === "string" ? draft.answers.profileSummary : "");
+          setInterviewDecisionSignals(Array.isArray(draft.answers.decisionSignals) ? draft.answers.decisionSignals.map(String) : []);
         }
       })
       .catch(() => undefined);
@@ -852,10 +924,9 @@ function WorkspaceView({
     try {
       await studentApi.saveProfile(session.token, {
         ...profile,
-        studentNo: studentNoFromEmail(session.profile.email),
         privacy: { hideSensitive: true }
       });
-      setNotice("档案已写入数据库，账号状态进入问卷阶段");
+      setNotice("档案已写入数据库，账号状态进入 AI 访谈阶段");
     } catch (exception) {
       setNotice(exception instanceof Error ? exception.message : "保存失败");
     } finally {
@@ -878,7 +949,7 @@ function WorkspaceView({
         onReport(task.report);
         onTask(task);
         studentApi.workbench(session.token).then(setWorkbench).catch(() => undefined);
-        setNotice("问卷快照和 AI 报告已保存，可进入 AI 报告页查看");
+        setNotice("访谈素材和 AI 报告已保存，可进入 AI 报告页查看");
         return;
       }
       for (let index = 0; index < 12; index++) {
@@ -924,6 +995,8 @@ function WorkspaceView({
       setInterviewProgress(response.completionPercent);
       setReadyToGenerate(response.readyToGenerate);
       setInterviewExploreTopics(response.missingFields);
+      setInterviewProfileSummary(response.profileSummary || (typeof response.answers.profileSummary === "string" ? response.answers.profileSummary : ""));
+      setInterviewDecisionSignals(response.decisionSignals || (Array.isArray(response.answers.decisionSignals) ? response.answers.decisionSignals.map(String) : []));
       setInterviewMessages([
         ...nextMessages,
         { role: "assistant", content: response.assistantMessage }
@@ -965,7 +1038,7 @@ function WorkspaceView({
       {!session && (
         <section className="disclaimer">
           <AlertTriangle size={18} />
-          <span>请先登录或注册学校邮箱账号。登录后档案、问卷和报告会真实保存到数据库。</span>
+          <span>请先登录或注册学校邮箱账号。登录后档案、AI 访谈素材和报告会真实保存到数据库。</span>
           <button className="secondary-button" onClick={onLogin}>登录</button>
         </section>
       )}
@@ -975,7 +1048,6 @@ function WorkspaceView({
           <div className="form-grid">
             {[
               ["姓名", "name"],
-              ["毕业年份", "graduationYear"],
               ["手机号", "phone"]
             ].map(([label, key]) => (
               <label key={label}>
@@ -987,19 +1059,20 @@ function WorkspaceView({
               </label>
             ))}
             <label>
-              <span>专业</span>
-              <input
-                value={profile.major}
-                placeholder="仅限中文"
-                onChange={(event) => setProfile({ ...profile, major: onlyChinese(event.target.value) })}
-              />
-            </label>
-            <label>
               <span>学院</span>
-              <select value={profile.college} onChange={(event) => setProfile({ ...profile, college: event.target.value })}>
+              <select value={profile.college} onChange={(event) => setProfile({ ...profile, college: event.target.value, major: "" })}>
                 <option value="">请选择学院</option>
                 {collegeOptions.map((college) => (
                   <option value={college} key={college}>{college}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>专业</span>
+              <select value={profile.major} onChange={(event) => setProfile({ ...profile, major: event.target.value })} disabled={!profile.college}>
+                <option value="">请选择专业</option>
+                {profileMajors.map((major) => (
+                  <option value={major} key={major}>{major}</option>
                 ))}
               </select>
             </label>
@@ -1009,7 +1082,7 @@ function WorkspaceView({
             </label>
           </div>
           <div className="readonly-line">
-            学号：{session ? studentNoFromEmail(session.profile.email) || "无法从邮箱识别" : "登录后从学校邮箱自动识别"}
+            学号：{session ? studentNoFromEmail(session.profile.email) || session.profile.studentNo || "未识别" : "注册后自动识别"}
           </div>
           <div className="privacy-row">
             <label>
@@ -1023,8 +1096,8 @@ function WorkspaceView({
         <div className="surface status-surface">
           <SectionTitle icon={Bot} title="AI 路径访谈" />
           <div className="stepper">
-            {["邮箱验证", "基础档案", "AI 访谈", "AI 报告"].map((step, index) => (
-              <div className={index < 2 || (index === 2 && interviewProgress > 0) ? "step done" : "step"} key={step}>
+            {["账号与档案", "AI 访谈", "AI 报告"].map((step, index) => (
+              <div className={index === 0 || (index === 1 && interviewProgress > 0) ? "step done" : "step"} key={step}>
                 <span>{index + 1}</span>
                 <strong>{step}</strong>
               </div>
@@ -1066,6 +1139,16 @@ function WorkspaceView({
             {interviewExploreTopics.length > 0 && (
               <p className="helper-text">可以继续聊：{interviewExploreTopics.join("、")}</p>
             )}
+            {(interviewProfileSummary || interviewDecisionSignals.length > 0) && (
+              <div className="interview-insight-box">
+                {interviewProfileSummary && <p>{interviewProfileSummary}</p>}
+                {interviewDecisionSignals.length > 0 && (
+                  <div>
+                    {interviewDecisionSignals.slice(0, 4).map((signal) => <span key={signal}>{signal}</span>)}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <div className="button-row">
             <button className="secondary-button" onClick={saveDraft} disabled={saving}>保存访谈快照</button>
@@ -1091,14 +1174,14 @@ function WorkspaceView({
                 <em>{item.stage}</em>
               </div>
             ))}
-            {!workbench?.todos.length && <div className="empty-state">生成 AI 报告后，会从行动计划里生成你的待办。</div>}
+            {!workbench?.todos.length && <div className="empty-state">生成 AI 报告后，可以围绕报告正文继续拆解待办。</div>}
           </div>
         </div>
         <div className="surface">
           <SectionTitle icon={Sparkles} title="当前主路径" />
           <div className="workbench-summary">
-            <strong>{workbench?.mainPath || "完成问卷后生成"}</strong>
-            <span>备选：{workbench?.alternativePaths?.join(" / ") || "考公 / 考研 / 就业"}</span>
+            <strong>{workbench?.mainPath || "完成 AI 访谈后生成"}</strong>
+            <span>备选：{workbench?.alternativePaths?.join(" / ") || (workbench?.latestReport?.narrativeReport ? "可在报告正文中查看" : "考公 / 考研 / 就业")}</span>
             {workbench?.staleReport && <p className="form-error">档案已更新，建议重新生成报告。</p>}
           </div>
           <div className="queue-list">
@@ -1178,6 +1261,9 @@ function ReportView({
   const planRows = report?.plan ?? [];
   const riskRows = report?.risks ?? [];
   const alternativeRows = report?.alternatives ?? [];
+  const narrativeReport = report?.narrativeReport?.trim();
+  const studentProfile = report?.studentProfile?.trim();
+  const hasStructuredReport = scoreRows.length > 0 || dimensionRows.length > 0 || planRows.length > 0 || riskRows.length > 0 || alternativeRows.length > 0;
 
   async function askReport() {
     if (!session) {
@@ -1271,10 +1357,24 @@ function ReportView({
       {!report && (
         <section className="surface">
           <SectionTitle icon={Sparkles} title="暂无 AI 报告" />
-          <div className="empty-state">当前账号还没有已完成的 AI 报告。完成工作台里的 AI 访谈并生成报告后，这里会显示路径评分、维度对比、行动计划和报告追问。</div>
+          <div className="empty-state">当前账号还没有已完成的 AI 报告。完成工作台里的 AI 访谈并生成报告后，这里会显示完整报告正文和报告追问。</div>
         </section>
       )}
       {report && (
+        <>
+      {(narrativeReport || studentProfile) && (
+        <section className="surface report-narrative">
+          <SectionTitle icon={FileText} title="综合报告正文" />
+          {studentProfile && (
+            <div className="report-profile-box">
+              <strong>学生画像</strong>
+              <p>{studentProfile}</p>
+            </div>
+          )}
+          {narrativeReport && <p>{narrativeReport}</p>}
+        </section>
+      )}
+      {hasStructuredReport && (
         <>
       <section className="content-grid split">
         <div className="surface">
@@ -1356,11 +1456,13 @@ function ReportView({
           </div>
         </div>
       </section>
+        </>
+      )}
       <section className="surface ai-chat">
         <SectionTitle icon={Bot} title="报告追问" />
         <div className="chat-history">
           {chatAnswers.length === 0 && (
-            <div className="message assistant">围绕当前报告继续追问，系统会按问题理解、影响因素、路径比较、建议和提醒结构化回答。</div>
+            <div className="message assistant">围绕当前报告继续追问，我会结合报告正文和你的补充问题继续分析。</div>
           )}
           {chatAnswers.map((item) => (
             <div className="chat-pair" key={item.question}>
@@ -1548,7 +1650,6 @@ function ChartsView({
   const [typeFilter, setTypeFilter] = useState("");
   const [collegeFilter, setCollegeFilter] = useState("");
   const [majorFilter, setMajorFilter] = useState("");
-  const [graduationYearFilter, setGraduationYearFilter] = useState("");
 
   useEffect(() => {
     if (!openChartId) {
@@ -1560,20 +1661,18 @@ function ChartsView({
     setTypeFilter("");
     setCollegeFilter("");
     setMajorFilter("");
-    setGraduationYearFilter("");
   }, [openChartId]);
 
   useEffect(() => {
     publicApi.charts({
       path: pathFilter,
       college: collegeFilter,
-      major: majorFilter,
-      graduationYear: graduationYearFilter
+      major: majorFilter
     }).then(setChartItems).catch(() => undefined);
     if (session?.token) {
       studentApi.recordActivity(session.token, "chart", pathFilter || "all", `${pathFilter || "全部"}图表中心`, "/charts").catch(() => undefined);
     }
-  }, [pathFilter, collegeFilter, majorFilter, graduationYearFilter, session?.token]);
+  }, [pathFilter, collegeFilter, majorFilter, session?.token]);
 
   const visibleCharts = useMemo(
     () => chartItems.filter((chart) => !typeFilter || chart.chartType === typeFilter),
@@ -1794,12 +1893,6 @@ function ChartsView({
           </select>
           <input value={collegeFilter} onChange={(event) => setCollegeFilter(event.target.value)} placeholder="学院筛选" />
           <input value={majorFilter} onChange={(event) => setMajorFilter(event.target.value)} placeholder="专业筛选" />
-          <select value={graduationYearFilter} onChange={(event) => setGraduationYearFilter(event.target.value)}>
-            <option value="">全部毕业年份</option>
-            <option value="2025">2025</option>
-            <option value="2026">2026</option>
-            <option value="2027">2027</option>
-          </select>
         </div>
         <div className="chart-summary-strip">
           <span>当前展示 {visibleCharts.length} 张图表</span>
@@ -2280,11 +2373,11 @@ function AdminView() {
   const [adminBusy, setAdminBusy] = useState("");
   const [adminTab, setAdminTab] = useState<"overview" | "users" | "contents" | "review" | "sources" | "paths" | "charts" | "tags" | "ai">("overview");
   const [sourceForm, setSourceForm] = useState({ id: undefined as number | undefined, name: "", url: "", type: "公开权威数据", path: "就业", frequency: "每日", trustLevel: "中", status: "启用" });
-  const [contentForm, setContentForm] = useState({ id: undefined as number | undefined, title: "首页公告", category: "公告", summary: "请完成基础档案和深度问卷。", body: "请完成基础档案和深度问卷。", sourceName: "后台维护", sourceUrl: "", tags: "公告", displayPosition: "首页", sortOrder: 1, status: "已发布" });
+  const [contentForm, setContentForm] = useState({ id: undefined as number | undefined, title: "首页公告", category: "公告", summary: "请完成基础档案和 AI 访谈。", body: "请完成基础档案和 AI 访谈。", sourceName: "后台维护", sourceUrl: "", tags: "公告", displayPosition: "首页", sortOrder: 1, status: "已发布" });
   const [tagForm, setTagForm] = useState({ id: undefined as number | undefined, name: "校招", type: "内容标签", status: "启用", sortOrder: 9 });
   const [chartForm, setChartForm] = useState<ChartForm>(emptyChartForm);
   const [pathForm, setPathForm] = useState<PathForm>(emptyPathForm);
-  const [aiForm, setAiForm] = useState({ id: undefined as number | undefined, configType: "prompt", version: "PROMPT-2026.06", title: "追问提示词", content: "围绕报告输入快照给出结构化追问回答。", status: "草稿" });
+  const [aiForm, setAiForm] = useState({ id: undefined as number | undefined, configType: "prompt", version: "PROMPT-2026.06", title: "追问提示词", content: "围绕报告正文和访谈素材回答追问，不输出录取、上岸、就业结果承诺。", status: "草稿" });
   const [candidateStatus, setCandidateStatus] = useState("待审核");
   const [candidateKeyword, setCandidateKeyword] = useState("");
   const [contentKeyword, setContentKeyword] = useState("");
@@ -2321,9 +2414,43 @@ function AdminView() {
     setReports(nextReports);
   }
 
+  function clearAdminData() {
+    setDashboard(null);
+    setSources([]);
+    setPosts([]);
+    setStudents([]);
+    setContents([]);
+    setCandidates([]);
+    setCharts([]);
+    setPathConfigs([]);
+    setTags([]);
+    setAiConfigs([]);
+    setReports([]);
+  }
+
+  function isAdminAuthError(exception: unknown) {
+    const message = exception instanceof Error ? exception.message : String(exception ?? "");
+    return message.includes("401")
+      || message.includes("未登录")
+      || message.includes("登录已过期")
+      || message.includes("登录凭证")
+      || message.includes("未经授权");
+  }
+
+  function handleAdminException(exception: unknown, fallback: string) {
+    if (isAdminAuthError(exception)) {
+      localStorage.removeItem("career-compass-admin-token");
+      setAdmin(null);
+      clearAdminData();
+      setAdminError("后台登录已过期，请重新登录后台。");
+      return;
+    }
+    setAdminError(exception instanceof Error ? exception.message : fallback);
+  }
+
   useEffect(() => {
     if (!admin?.token) return;
-    refreshAdmin(admin.token).catch(() => undefined);
+    refreshAdmin(admin.token).catch((exception) => handleAdminException(exception, "后台数据加载失败"));
   }, [admin?.token]);
 
   const adminWorking = Boolean(adminBusy);
@@ -2338,7 +2465,7 @@ function AdminView() {
       if (message) setAdminNotice(message);
       await refreshAdmin();
     } catch (exception) {
-      setAdminError(exception instanceof Error ? exception.message : "后台操作失败");
+      handleAdminException(exception, "后台操作失败");
     } finally {
       setAdminBusy("");
     }
@@ -2358,6 +2485,14 @@ function AdminView() {
     } finally {
       setAdminBusy("");
     }
+  }
+
+  function adminLogout() {
+    localStorage.removeItem("career-compass-admin-token");
+    setAdmin(null);
+    clearAdminData();
+    setAdminNotice("");
+    setAdminError("");
   }
 
   async function updateStatus(id: number, status: string) {
@@ -2456,14 +2591,6 @@ function AdminView() {
     await runAdminAction(`user-${id}-${status}`, async () => {
       await adminApi.updateStudentStatus(admin.token, id, status, "后台用户管理操作");
       return "用户状态已更新";
-    });
-  }
-
-  async function resetUser(id: number) {
-    if (!admin) return;
-    await runAdminAction(`user-${id}-reset`, async () => {
-      await adminApi.resetStudentLogin(admin.token, id);
-      return "登录异常状态已重置";
     });
   }
 
@@ -2653,9 +2780,12 @@ function AdminView() {
         <span>后台数据更新时间：{formatAdminTime(dashboard?.updatedAt)}</span>
         <span>待抓取审核：{dashboard?.pendingCrawlCount ?? pendingCandidates.length} 条</span>
         <span>内容审核：{posts.filter((post) => post.status === "待审核").length} 条</span>
-        <button className="secondary-button" onClick={() => refreshAdmin().catch(() => setAdminError("后台数据刷新失败"))} disabled={adminWorking}>
+        <button className="secondary-button" onClick={() => refreshAdmin().catch((exception) => handleAdminException(exception, "后台数据刷新失败"))} disabled={adminWorking}>
           <RefreshCcw size={16} />
           刷新
+        </button>
+        <button className="secondary-button" onClick={adminLogout} disabled={adminWorking}>
+          退出后台
         </button>
       </section>
       <section className="segmented admin-tabs" aria-label="后台模块切换">
@@ -2743,7 +2873,7 @@ function AdminView() {
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>账号</th><th>认证信息</th><th>状态</th><th>登录异常</th><th>操作</th></tr>
+                <tr><th>账号</th><th>认证信息</th><th>状态</th><th>操作</th></tr>
               </thead>
               <tbody>
                 {visibleStudents.map((student) => (
@@ -2751,19 +2881,17 @@ function AdminView() {
                     <td>{student.email}<br /><small>{student.nickname || "未设置昵称"} · 创建 {formatAdminTime(student.createdAt)}</small></td>
                     <td>{student.name || "未填写"} · {student.studentNo || "未填写"}<br /><small>{student.college || "未填写"} / {student.major || "未填写"} · 最近登录 {formatAdminTime(student.lastLoginAt)}</small></td>
                     <td><StatusPill status={student.status} /></td>
-                    <td>{student.loginFailures} 次{student.lockedUntil ? ` · 锁定至 ${student.lockedUntil}` : ""}</td>
                     <td>
                       <div className="button-row compact-actions">
                         <button className="secondary-button" onClick={() => updateUser(student.id, "已禁用")} disabled={adminWorking}>{busyLabel(`user-${student.id}-已禁用`, "禁用")}</button>
                         <button className="secondary-button" onClick={() => updateUser(student.id, "已完成引导")} disabled={adminWorking}>{busyLabel(`user-${student.id}-已完成引导`, "恢复")}</button>
-                        <button className="secondary-button" onClick={() => resetUser(student.id)} disabled={adminWorking}>{busyLabel(`user-${student.id}-reset`, "重置")}</button>
                       </div>
                     </td>
                   </tr>
                 ))}
                 {visibleStudents.length === 0 && (
                   <tr>
-                    <td colSpan={5}>没有匹配的学生账号</td>
+                    <td colSpan={4}>没有匹配的学生账号</td>
                   </tr>
                 )}
               </tbody>
@@ -3486,7 +3614,7 @@ function MeView({
             {history.map((item) => (
               <div className="queue-item" key={item.id}>
                 <div>
-                  <strong>{item.topPath} · {item.topScore}</strong>
+                  <strong>{item.topScore > 0 ? `${item.topPath} · ${item.topScore}` : item.topPath}</strong>
                   <span>{item.reportVersion} · {item.generatedAt}</span>
                 </div>
               </div>

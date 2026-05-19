@@ -20,8 +20,6 @@ app:
   admin-token: ${ADMIN_TOKEN:change-me-admin-token}
   jwt-secret: ${JWT_SECRET:career-compass-local-secret-change-me}
   student-email-pattern: '${STUDENT_EMAIL_PATTERN:^\d{10}@st\.usst\.edu\.cn$}'
-  graduation-years: ${GRADUATION_YEARS:2025,2026,2027}
-  expose-dev-verification-codes: ${EXPOSE_DEV_VERIFICATION_CODES:true}
   auto-crawl:
     enabled: ${AUTO_CRAWL_ENABLED:true}
     initial-delay-minutes: ${AUTO_CRAWL_INITIAL_DELAY_MINUTES:5}
