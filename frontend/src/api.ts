@@ -100,6 +100,7 @@ export type AiAnswer = {
   pathComparison: string[];
   advice: string[];
   reminders: string[];
+  answerText?: string;
 };
 
 export type Dashboard = {

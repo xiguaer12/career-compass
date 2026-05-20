@@ -237,7 +237,8 @@ public final class Dtos {
       List<String> factors,
       List<String> pathComparison,
       List<String> advice,
-      List<String> reminders
+      List<String> reminders,
+      String answerText
   ) {}
 
   public record CommunityPost(

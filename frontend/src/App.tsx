@@ -1360,16 +1360,6 @@ function ReportView({
             ))}
             {scoreRows.length === 0 && <div className="empty-state">这份报告暂未返回路径评分，请重新生成报告。</div>}
           </div>
-          <div className="reason-box">
-            <strong>现状摘要</strong>
-            <p>{report.summary || "这份报告暂未返回现状摘要，请重新生成报告。"}</p>
-          </div>
-          {scoreRows[0]?.reasons.length > 0 && (
-            <div className="reason-box">
-              <strong>{scoreRows[0].name} 推荐依据</strong>
-              <p>{scoreRows[0].reasons.join("；")}</p>
-            </div>
-          )}
         </div>
         <div className="surface">
           <SectionTitle icon={BarChart3} title="维度对比" />
@@ -1398,7 +1388,11 @@ function ReportView({
             {planRows.map((item) => (
               <article className="plan-item" key={item.stage}>
                 <strong>{item.stage}</strong>
-                <p>{item.actions.join("；")}</p>
+                <ul className="plan-action-list">
+                  {item.actions.map((action) => (
+                    <li key={action}>{action}</li>
+                  ))}
+                </ul>
               </article>
             ))}
           </div>
@@ -1430,16 +1424,20 @@ function ReportView({
           {chatAnswers.length === 0 && (
             <div className="message assistant">围绕当前报告继续追问，我会结合报告正文和你的补充问题继续分析。</div>
           )}
-          {chatAnswers.map((item) => (
-            <div className="chat-pair" key={item.question}>
-              <div className="message user">{item.question}</div>
-              <div className="message assistant">
-                <strong>{item.answer.questionUnderstanding}</strong>
-                <p>{item.answer.advice.join("；")}</p>
-                <small>{item.answer.reminders.join("；")}</small>
+          {chatAnswers.map((item) => {
+            const answerText = item.answer.answerText?.trim()
+              || [item.answer.questionUnderstanding, item.answer.advice?.join("；"), item.answer.reminders?.join("；")]
+                .filter(Boolean)
+                .join("\n\n");
+            return (
+              <div className="chat-pair" key={item.question}>
+                <div className="message user">{item.question}</div>
+                <div className="message assistant report-chat-answer">
+                  {answerText}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <div className="chat-input">
           <input value={chatQuestion} onChange={(event) => setChatQuestion(event.target.value)} placeholder="围绕当前报告继续追问" />

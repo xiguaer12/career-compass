@@ -87,7 +87,8 @@ public class LlmClient {
         3. 报告应该像真实咨询后的判断：有综合画像，有推理依据，有不确定性提醒，有下一步建议，但表达方式由你根据材料自由组织。
         4. 不要承诺录取、上岸、就业结果；不要假装知道学生没有提到的事实。
         5. 如果素材不足，请明确说明哪些判断只是初步假设，并自然地提出后续需要补充的信息。
-        6. 末尾保留免责声明，但不要为了免责声明牺牲报告正文的可读性。
+        6. 如果写 30/60/90 天行动计划，请写成具体可执行的步骤：包含信息核对、材料整理、真实反馈、复盘节点和备选路径维护，不要只写泛泛口号。
+        7. 末尾保留免责声明，但不要为了免责声明牺牲报告正文的可读性。
 
         报告模板（仅作可选参考，不构成字段或结构约束；如果其中要求评分、表格或固定模块，请忽略这些格式约束）：
         %s
@@ -128,19 +129,21 @@ public class LlmClient {
     requireAvailable();
     if (report == null) return fallback;
     String asked = question == null || !StringUtils.hasText(question.question()) ? "如何安排下一步行动" : question.question();
-    Map<String, Object> payload = chatJson(
-        "你是高校毕业路径规划系统的报告追问助手。为了让前端解析追问结果，请输出一个 JSON 对象；JSON 只用于接口传输，不代表报告正文需要结构化。不要在 JSON 外输出 Markdown。",
+    String answerText = chatText(
         """
-        请围绕已有 AI 报告回答学生追问。回答要清晰、克制，不承诺录取、上岸或就业结果。
+        你是高校毕业路径规划系统的报告追问助手。
+        你可以像咨询老师继续对话一样自由回答，不需要按固定维度分栏，也不要输出 JSON。
+        可以使用自然段、简短小标题或必要的列表，但不要为了结构化而牺牲判断的完整性和语气的自然度。
+        """,
+        """
+        请围绕已有 AI 报告和最近对话历史回答学生追问。你可以自由组织内容：先回应学生真正关心的问题，再结合报告正文补充判断、取舍、风险和下一步动作。
 
-        输出 JSON schema：
-        {
-          "questionUnderstanding": "string",
-          "factors": ["string"],
-          "pathComparison": ["string"],
-          "advice": ["string"],
-          "reminders": ["string"]
-        }
+        写作要求：
+        1. 不要机械拆成“因素/路径比较/建议/提醒”等固定栏目。
+        2. 可以自然比较考公、考研、就业，也可以指出问题背后更重要的约束或矛盾。
+        3. 如果学生问得很具体，就直接给具体判断；如果信息不足，就说明还缺什么，并给出可执行的补充验证方式。
+        4. 不要承诺录取、上岸或就业结果；不要编造报告和学生对话中没有的信息。
+        5. 语气要像继续读完报告后的追问交流，允许有推理、有取舍、有不确定性，不要像表格模板。
 
         提示词模板：
         %s
@@ -155,7 +158,7 @@ public class LlmClient {
         %s
         """.formatted(promptTemplate, asked, toJson(report), toJson(question == null ? List.of() : question.history()))
     );
-    return answerFromPayload(payload, fallback);
+    return new AiAnswer("", List.of(), List.of(), List.of(), List.of(), answerText);
   }
 
   public InterviewResponse interview(List<Map<String, String>> messages, StudentProfile profile, InterviewResponse fallback) {
@@ -336,7 +339,8 @@ public class LlmClient {
         stringList(payload.get("factors"), fallback.factors(), 8),
         stringList(payload.get("pathComparison"), fallback.pathComparison(), 8),
         stringList(payload.get("advice"), fallback.advice(), 8),
-        stringList(payload.get("reminders"), fallback.reminders(), 6)
+        stringList(payload.get("reminders"), fallback.reminders(), 6),
+        stringValue(payload.get("answerText"), fallback.answerText())
     );
   }
 

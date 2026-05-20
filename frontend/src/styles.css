@@ -1421,10 +1421,24 @@ th {
   font-size: 20px;
 }
 
+.plan-action-list {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: #475569;
+  line-height: 1.65;
+}
+
 .ai-chat .chat-history {
   display: grid;
   gap: 10px;
   margin-bottom: 14px;
+}
+
+.report-chat-answer {
+  line-height: 1.85;
+  white-space: pre-line;
 }
 
 .interview-panel {
