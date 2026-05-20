@@ -83,6 +83,7 @@ import {
   type PathPage,
   type ReportTask,
   type Session,
+  type StudentProfile,
   type StudentAdminItem,
   type TagItem,
   type WorkbenchResponse
@@ -202,6 +203,28 @@ function draftFromPost(post: CommunityPost): PostDraft {
 
 function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function initialInterviewMessages(): InterviewMessage[] {
+  return [
+    {
+      role: "assistant",
+      content: "你可以从这两个入口里任选一个说起：最近让你纠结的一件事，或者一段项目、实习、课程、考证经历；如果愿意，也可以顺带说说城市、家庭、收入、成长里你最在意哪一两个因素。"
+    }
+  ];
+}
+
+function interviewMessagesFromAnswers(answers?: Record<string, unknown>): InterviewMessage[] {
+  const rawMessages = answers?.sourceMessages;
+  if (!Array.isArray(rawMessages)) return initialInterviewMessages();
+  const messages = rawMessages
+    .map((item) => item as Record<string, unknown>)
+    .map((item) => ({
+      role: item.role === "user" ? "user" : item.role === "assistant" ? "assistant" : "",
+      content: typeof item.content === "string" ? item.content : ""
+    }))
+    .filter((message): message is InterviewMessage => Boolean(message.role && message.content.trim()));
+  return messages.length > 0 ? messages : initialInterviewMessages();
 }
 
 function formatAdminTime(value?: string | null) {
@@ -492,9 +515,19 @@ function App() {
           />
         )}
         {activeTab === "messages" && <MessagesView session={session} onLogin={() => setAuthOpen(true)} setNotice={setNotice} />}
-        {activeTab === "me" && <MeView session={session} onLogin={() => setAuthOpen(true)} setNotice={setNotice} onLogout={() => {
-          logout();
-        }} />}
+        {activeTab === "me" && (
+          <MeView
+            session={session}
+            onLogin={() => setAuthOpen(true)}
+            setNotice={setNotice}
+            onProfileUpdate={(profile) => {
+              setSession((current) => current ? { ...current, status: profile.status, profile } : current);
+            }}
+            onLogout={() => {
+              logout();
+            }}
+          />
+        )}
       </main>
     </div>
   );
@@ -755,12 +788,12 @@ function HomeView({ report, onNavigate }: { report: AiReport | null; onNavigate:
           <p className="eyebrow">Career Compass</p>
           <h2>面向本科应届毕业生的三路径规划平台。</h2>
           <p>
-            平台围绕考研、考公、就业三个方向，把基础档案、AI 访谈、规划报告、资料模板、真实资讯和社区经验整合在一起，帮助学生更早看清选择条件和下一步行动。
+            平台围绕考研、考公、就业三个方向，把个人信息、AI 访谈、规划报告、资料模板、真实资讯和社区经验整合在一起，帮助学生更早看清选择条件和下一步行动。
           </p>
           <div className="hero-actions">
             <button type="button" className="primary-button" onClick={() => onNavigate("workspace")}>
               <ClipboardList size={17} />
-              完善基础档案
+              开始 AI 访谈
             </button>
             <button type="button" className="secondary-button" onClick={() => onNavigate("paths")}>
               <Route size={17} />
@@ -773,7 +806,7 @@ function HomeView({ report, onNavigate }: { report: AiReport | null; onNavigate:
             <Compass size={24} />
             <div>
               <strong>{topScore ? `${topScore.path} ${topScore.score}` : hasOpenReport ? "已生成开放报告" : "先建立你的规划上下文"}</strong>
-              <span>{topScore ? "当前报告中的最高匹配方向" : hasOpenReport ? "进入报告页查看完整正文" : "从基础档案和 AI 访谈开始"}</span>
+              <span>{topScore ? "当前报告中的最高匹配方向" : hasOpenReport ? "进入报告页查看完整正文" : "从 AI 访谈开始"}</span>
             </div>
           </div>
           <div className="home-step-list">
@@ -857,27 +890,8 @@ function WorkspaceView({
   onTask: (task: ReportTask | null) => void;
   setNotice: (message: string) => void;
 }) {
-  const emptyProfile = {
-    name: "",
-    college: "",
-    major: "",
-    phone: "",
-    nickname: ""
-  };
-  const [profile, setProfile] = useState({
-    name: session?.profile.name || "",
-    college: session?.profile.college || "",
-    major: session?.profile.major || "",
-    phone: session?.profile.phone || "",
-    nickname: session?.profile.nickname === "Compass 用户" ? "" : session?.profile.nickname || ""
-  });
   const [assessment, setAssessment] = useState<Record<string, unknown>>({});
-  const [interviewMessages, setInterviewMessages] = useState<InterviewMessage[]>([
-    {
-      role: "assistant",
-      content: "你可以从这两个入口里任选一个说起：最近让你纠结的一件事，或者一段项目、实习、课程、考证经历；如果愿意，也可以顺带说说城市、家庭、收入、成长里你最在意哪一两个因素。"
-    }
-  ]);
+  const [interviewMessages, setInterviewMessages] = useState<InterviewMessage[]>(initialInterviewMessages);
   const [interviewInput, setInterviewInput] = useState("");
   const [interviewProgress, setInterviewProgress] = useState(0);
   const [readyToGenerate, setReadyToGenerate] = useState(false);
@@ -888,51 +902,41 @@ function WorkspaceView({
   const [interviewLoading, setInterviewLoading] = useState(false);
   const [workbench, setWorkbench] = useState<WorkbenchResponse | null>(null);
   const [reportMessage, setReportMessage] = useState("");
-  const profileMajors = majorsForCollege(profile.college);
 
   useEffect(() => {
     if (!session) {
-      setProfile(emptyProfile);
+      setAssessment({});
+      setInterviewMessages(initialInterviewMessages());
+      setInterviewProgress(0);
+      setReadyToGenerate(false);
+      setInterviewExploreTopics([]);
+      setInterviewProfileSummary("");
+      setInterviewDecisionSignals([]);
       return;
     }
-    setProfile({
-      name: session.profile.name || "",
-      college: session.profile.college || "",
-      major: session.profile.major || "",
-      phone: session.profile.phone || "",
-      nickname: session.profile.nickname === "Compass 用户" ? "" : session.profile.nickname || ""
-    });
     studentApi.latestDraft(session.token)
       .then((draft) => {
         if (draft?.answers) {
           setAssessment(draft.answers);
           setInterviewProgress(draft.completionPercent || 0);
+          setInterviewMessages(interviewMessagesFromAnswers(draft.answers));
+          setReadyToGenerate((draft.completionPercent || 0) >= 45);
+          setInterviewExploreTopics([]);
           setInterviewProfileSummary(typeof draft.answers.profileSummary === "string" ? draft.answers.profileSummary : "");
           setInterviewDecisionSignals(Array.isArray(draft.answers.decisionSignals) ? draft.answers.decisionSignals.map(String) : []);
+        } else {
+          setAssessment({});
+          setInterviewMessages(initialInterviewMessages());
+          setInterviewProgress(0);
+          setReadyToGenerate(false);
+          setInterviewExploreTopics([]);
+          setInterviewProfileSummary("");
+          setInterviewDecisionSignals([]);
         }
       })
       .catch(() => undefined);
     studentApi.workbench(session.token).then(setWorkbench).catch(() => undefined);
   }, [session?.token]);
-
-  async function saveProfile() {
-    if (!session) {
-      onLogin();
-      return;
-    }
-    setSaving(true);
-    try {
-      await studentApi.saveProfile(session.token, {
-        ...profile,
-        privacy: { hideSensitive: true }
-      });
-      setNotice("档案已写入数据库，账号状态进入 AI 访谈阶段");
-    } catch (exception) {
-      setNotice(exception instanceof Error ? exception.message : "保存失败");
-    } finally {
-      setSaving(false);
-    }
-  }
 
   async function submitAssessment() {
     if (!session) {
@@ -1017,17 +1021,28 @@ function WorkspaceView({
     await submitAssessment();
   }
 
-  async function saveDraft() {
+  async function restartInterview() {
     if (!session) {
       onLogin();
       return;
     }
+    if (interviewMessages.length > 1 && !window.confirm("确认重新开始一段新的 AI 访谈？当前未生成报告的访谈草稿会被清空。")) return;
     setSaving(true);
     try {
-      await studentApi.saveDraft(session.token, assessment, interviewProgress, "ai-interview");
-      setNotice("访谈快照已保存，下次进入可继续补充");
+      const emptyAnswers: Record<string, unknown> = { sourceMessages: [] };
+      await studentApi.saveDraft(session.token, emptyAnswers, 0, "ai-interview");
+      setAssessment({});
+      setInterviewMessages(initialInterviewMessages());
+      setInterviewInput("");
+      setInterviewProgress(0);
+      setReadyToGenerate(false);
+      setInterviewExploreTopics([]);
+      setInterviewProfileSummary("");
+      setInterviewDecisionSignals([]);
+      setReportMessage("");
+      setNotice("已开启新的 AI 访谈，可以从一个新的问题重新聊起");
     } catch (exception) {
-      setNotice(exception instanceof Error ? exception.message : "草稿保存失败");
+      setNotice(exception instanceof Error ? exception.message : "重新开始访谈失败");
     } finally {
       setSaving(false);
     }
@@ -1042,61 +1057,10 @@ function WorkspaceView({
           <button className="secondary-button" onClick={onLogin}>登录</button>
         </section>
       )}
-      <section className="content-grid split">
-        <div className="surface">
-          <SectionTitle icon={UserRoundCheck} title="基础档案" />
-          <div className="form-grid">
-            {[
-              ["姓名", "name"],
-              ["手机号", "phone"]
-            ].map(([label, key]) => (
-              <label key={label}>
-                <span>{label}</span>
-                <input
-                  value={profile[key as keyof typeof profile]}
-                  onChange={(event) => setProfile({ ...profile, [key]: event.target.value })}
-                />
-              </label>
-            ))}
-            <label>
-              <span>学院</span>
-              <select value={profile.college} onChange={(event) => setProfile({ ...profile, college: event.target.value, major: "" })}>
-                <option value="">请选择学院</option>
-                {collegeOptions.map((college) => (
-                  <option value={college} key={college}>{college}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>专业</span>
-              <select value={profile.major} onChange={(event) => setProfile({ ...profile, major: event.target.value })} disabled={!profile.college}>
-                <option value="">请选择专业</option>
-                {profileMajors.map((major) => (
-                  <option value={major} key={major}>{major}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>昵称</span>
-              <input value={profile.nickname} placeholder="可选，不填写则前台显示匿名用户" onChange={(event) => setProfile({ ...profile, nickname: event.target.value })} />
-            </label>
-          </div>
-          <div className="readonly-line">
-            学号：{session ? studentNoFromEmail(session.profile.email) || session.profile.studentNo || "未识别" : "注册后自动识别"}
-          </div>
-          <div className="privacy-row">
-            <label>
-              <input type="checkbox" defaultChecked />
-              默认不公开真实姓名、学号、手机号
-            </label>
-            <button className="primary-button" onClick={saveProfile} disabled={saving}>保存档案</button>
-          </div>
-        </div>
-
-        <div className="surface status-surface">
+      <section className="surface status-surface">
           <SectionTitle icon={Bot} title="AI 路径访谈" />
           <div className="stepper">
-            {["账号与档案", "AI 访谈", "AI 报告"].map((step, index) => (
+            {["账号", "AI 访谈", "AI 报告"].map((step, index) => (
               <div className={index === 0 || (index === 1 && interviewProgress > 0) ? "step done" : "step"} key={step}>
                 <span>{index + 1}</span>
                 <strong>{step}</strong>
@@ -1151,14 +1115,16 @@ function WorkspaceView({
             )}
           </div>
           <div className="button-row">
-            <button className="secondary-button" onClick={saveDraft} disabled={saving}>保存访谈快照</button>
+            <button className="secondary-button" onClick={restartInterview} disabled={saving || interviewLoading}>
+              <RefreshCcw size={17} />
+              重新开始访谈
+            </button>
             <button className="primary-button" onClick={generateFromInterview} disabled={saving || interviewLoading}>
               <Sparkles size={17} />
               {saving ? "生成中..." : readyToGenerate ? "生成报告" : "生成报告草案"}
             </button>
           </div>
           {reportMessage && <p className="helper-text">{reportMessage}</p>}
-        </div>
       </section>
 
       <section className="content-grid two">
@@ -1182,7 +1148,7 @@ function WorkspaceView({
           <div className="workbench-summary">
             <strong>{workbench?.mainPath || "完成 AI 访谈后生成"}</strong>
             <span>备选：{workbench?.alternativePaths?.join(" / ") || (workbench?.latestReport?.narrativeReport ? "可在报告正文中查看" : "考公 / 考研 / 就业")}</span>
-            {workbench?.staleReport && <p className="form-error">档案已更新，建议重新生成报告。</p>}
+            {workbench?.staleReport && <p className="form-error">个人信息已更新，建议重新生成报告。</p>}
           </div>
           <div className="queue-list">
             {(workbench?.timeline.length ? workbench.timeline : []).map((item) => (
@@ -1968,8 +1934,8 @@ function CommunityView({
   }, [imageFiles]);
 
   useEffect(() => {
-    communityApi.list({ path, type, keyword, sort }).then(setPosts).catch(() => undefined);
-  }, [path, type, keyword, sort]);
+    communityApi.list({ path, type, keyword, sort }, session?.token).then(setPosts).catch(() => undefined);
+  }, [path, type, keyword, sort, session?.token]);
 
   useEffect(() => {
     if (!session?.token) {
@@ -1996,7 +1962,7 @@ function CommunityView({
   }
 
   async function openPostById(postId: number, fallbackTitle = "社区内容") {
-    const detail = await communityApi.detail(postId);
+    const detail = await communityApi.detail(postId, session?.token);
     setSelectedPost(detail);
     setComments(await communityApi.comments(postId));
     if (session?.token) {
@@ -2036,7 +2002,7 @@ function CommunityView({
     try {
       const imageUrls = imageFiles.length ? await communityApi.uploadImages(session.token, imageFiles) : [];
       const next = await communityApi.create(session.token, title, body, composePath, composeType, true, imageUrls);
-      setPosts(await communityApi.list({ path, type, keyword, sort }));
+      setPosts(await communityApi.list({ path, type, keyword, sort }, session.token));
       setOwnPosts((current) => [next, ...current.filter((post) => post.id !== next.id)]);
       setSelectedPost(next);
       setTitle("");
@@ -2096,7 +2062,7 @@ function CommunityView({
         editDraft.imageUrls
       );
       setOwnPosts((current) => [updated, ...current.filter((post) => post.id !== updated.id)]);
-      setPosts(await communityApi.list({ path, type, keyword, sort }));
+      setPosts(await communityApi.list({ path, type, keyword, sort }, session.token));
       setSelectedPost(updated);
       setEditingPostId(null);
       setNotice("内容已重新提交审核，审核通过后会再次公开展示");
@@ -2126,8 +2092,20 @@ function CommunityView({
       onLogin();
       return;
     }
-    await communityApi.interact(session.token, postId, action);
-    setPosts(await communityApi.list({ path, type, keyword, sort }));
+    const result = await communityApi.interact(session.token, postId, action);
+    const active = Boolean(result.active);
+    const patchInteraction = (post: CommunityPost) => {
+      if (post.id !== postId) return post;
+      if (action === "like") {
+        const delta = Boolean(post.liked) === active ? 0 : active ? 1 : -1;
+        return { ...post, liked: active, likes: Math.max(0, post.likes + delta) };
+      }
+      const delta = Boolean(post.favorited) === active ? 0 : active ? 1 : -1;
+      return { ...post, favorited: active, favorites: Math.max(0, post.favorites + delta) };
+    };
+    setPosts((current) => current.map(patchInteraction));
+    setOwnPosts((current) => current.map(patchInteraction));
+    setSelectedPost((current) => current ? patchInteraction(current) : current);
   }
 
   async function report(postId: number) {
@@ -2300,6 +2278,26 @@ function CommunityView({
               <p className="community-detail-body">{selectedPost.body}</p>
               <PostImageGrid imageUrls={selectedPost.imageUrls} detail />
               <small>{selectedPost.authorDisplay || "匿名用户"} · {selectedPost.createdAt}</small>
+              <div className="post-actions detail-actions">
+                <button
+                  className={selectedPost.liked ? "icon-button active-interaction" : "icon-button"}
+                  title={selectedPost.liked ? "已点赞" : "点赞"}
+                  aria-pressed={Boolean(selectedPost.liked)}
+                  onClick={() => interact(selectedPost.id, "like")}
+                >
+                  <Heart size={16} fill={selectedPost.liked ? "currentColor" : "none"} />
+                  <span>{selectedPost.likes}</span>
+                </button>
+                <button
+                  className={selectedPost.favorited ? "icon-button active-interaction" : "icon-button"}
+                  title={selectedPost.favorited ? "已收藏" : "收藏"}
+                  aria-pressed={Boolean(selectedPost.favorited)}
+                  onClick={() => interact(selectedPost.id, "favorite")}
+                >
+                  <Star size={16} fill={selectedPost.favorited ? "currentColor" : "none"} />
+                  <span>{selectedPost.favorites}</span>
+                </button>
+              </div>
               {ownPostIds.has(selectedPost.id) && (
                 <div className="button-row compact-actions">
                   <button className="secondary-button" onClick={() => beginEdit(selectedPost)}>
@@ -2373,7 +2371,7 @@ function AdminView() {
   const [adminBusy, setAdminBusy] = useState("");
   const [adminTab, setAdminTab] = useState<"overview" | "users" | "contents" | "review" | "sources" | "paths" | "charts" | "tags" | "ai">("overview");
   const [sourceForm, setSourceForm] = useState({ id: undefined as number | undefined, name: "", url: "", type: "公开权威数据", path: "就业", frequency: "每日", trustLevel: "中", status: "启用" });
-  const [contentForm, setContentForm] = useState({ id: undefined as number | undefined, title: "首页公告", category: "公告", summary: "请完成基础档案和 AI 访谈。", body: "请完成基础档案和 AI 访谈。", sourceName: "后台维护", sourceUrl: "", tags: "公告", displayPosition: "首页", sortOrder: 1, status: "已发布" });
+  const [contentForm, setContentForm] = useState({ id: undefined as number | undefined, title: "首页公告", category: "公告", summary: "请完成 AI 访谈并生成报告。", body: "请完成 AI 访谈并生成报告。", sourceName: "后台维护", sourceUrl: "", tags: "公告", displayPosition: "首页", sortOrder: 1, status: "已发布" });
   const [tagForm, setTagForm] = useState({ id: undefined as number | undefined, name: "校招", type: "内容标签", status: "启用", sortOrder: 9 });
   const [chartForm, setChartForm] = useState<ChartForm>(emptyChartForm);
   const [pathForm, setPathForm] = useState<PathForm>(emptyPathForm);
@@ -3491,22 +3489,43 @@ function MeView({
   session,
   onLogin,
   setNotice,
+  onProfileUpdate,
   onLogout
 }: {
   session: Session | null;
   onLogin: () => void;
   setNotice: (message: string) => void;
+  onProfileUpdate: (profile: StudentProfile) => void;
   onLogout: () => void;
 }) {
+  const emptyProfileForm = {
+    name: "",
+    college: "",
+    major: "",
+    phone: "",
+    nickname: ""
+  };
   const [history, setHistory] = useState<Array<{ id: number; reportVersion: string; generatedAt: string; topPath: string; topScore: number }>>([]);
   const [community, setCommunity] = useState<Record<string, CommunityPost[]>>({ posts: [], favorites: [] });
   const [editingPostId, setEditingPostId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState<PostDraft>(emptyPostDraft);
   const [editSaving, setEditSaving] = useState(false);
   const [postError, setPostError] = useState("");
+  const [profileForm, setProfileForm] = useState(emptyProfileForm);
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState("");
+  const profileMajors = majorsForCollege(profileForm.college);
 
   useEffect(() => {
     if (!session) return;
+    setProfileForm({
+      name: session.profile.name || "",
+      college: session.profile.college || "",
+      major: session.profile.major || "",
+      phone: session.profile.phone || "",
+      nickname: session.profile.nickname === "Compass 用户" ? "" : session.profile.nickname || ""
+    });
     studentApi.reportHistory(session.token).then(setHistory).catch(() => undefined);
     refreshCommunity(session.token).catch(() => undefined);
   }, [session?.token]);
@@ -3573,6 +3592,35 @@ function MeView({
     setNotice("内容已删除，审计记录已保留");
   }
 
+  async function saveProfileEdit() {
+    if (!session) {
+      onLogin();
+      return;
+    }
+    setProfileSaving(true);
+    setProfileError("");
+    try {
+      const next = await studentApi.saveProfile(session.token, {
+        ...profileForm,
+        privacy: { hideSensitive: true }
+      });
+      onProfileUpdate(next);
+      setProfileForm({
+        name: next.name || "",
+        college: next.college || "",
+        major: next.major || "",
+        phone: next.phone || "",
+        nickname: next.nickname === "Compass 用户" ? "" : next.nickname || ""
+      });
+      setEditingProfile(false);
+      setNotice("个人信息已更新，后续 AI 访谈会使用新的学院和专业上下文");
+    } catch (exception) {
+      setProfileError(exception instanceof Error ? exception.message : "保存失败");
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
   async function cancel() {
     if (!session) {
       onLogin();
@@ -3598,14 +3646,72 @@ function MeView({
     <div className="page-stack">
       <section className="content-grid two">
         <div className="surface">
-          <SectionTitle icon={UserRound} title="个人资料" />
-          <div className="profile-lines">
-            <span>邮箱：{session.profile.email}</span>
-            <span>姓名：{session.profile.name || "未填写"}</span>
-            <span>学院：{session.profile.college || "未填写"}</span>
-            <span>专业：{session.profile.major || "未填写"}</span>
-            <span>状态：{session.profile.status}</span>
-          </div>
+          <SectionTitle
+            icon={UserRound}
+            title="个人资料"
+            action={editingProfile ? "收起" : "编辑"}
+            onAction={() => {
+              setEditingProfile(!editingProfile);
+              setProfileError("");
+            }}
+          />
+          {!editingProfile ? (
+            <div className="profile-lines">
+              <span>邮箱：{session.profile.email}</span>
+              <span>学号：{studentNoFromEmail(session.profile.email) || session.profile.studentNo || "未识别"}</span>
+              <span>姓名：{session.profile.name || "未填写"}</span>
+              <span>手机号：{session.profile.phone || "未填写"}</span>
+              <span>学院：{session.profile.college || "未填写"}</span>
+              <span>专业：{session.profile.major || "未填写"}</span>
+              <span>昵称：{session.profile.nickname || "未填写"}</span>
+              <span>状态：{session.profile.status}</span>
+            </div>
+          ) : (
+            <div className="profile-edit-panel">
+              <div className="form-grid">
+                <label>
+                  <span>姓名</span>
+                  <input value={profileForm.name} onChange={(event) => setProfileForm({ ...profileForm, name: event.target.value })} />
+                </label>
+                <label>
+                  <span>手机号</span>
+                  <input value={profileForm.phone} onChange={(event) => setProfileForm({ ...profileForm, phone: event.target.value.replace(/\D/g, "").slice(0, 11) })} />
+                </label>
+                <label>
+                  <span>学院</span>
+                  <select value={profileForm.college} onChange={(event) => setProfileForm({ ...profileForm, college: event.target.value, major: "" })}>
+                    <option value="">请选择学院</option>
+                    {collegeOptions.map((college) => (
+                      <option value={college} key={college}>{college}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>专业</span>
+                  <select value={profileForm.major} onChange={(event) => setProfileForm({ ...profileForm, major: event.target.value })} disabled={!profileForm.college}>
+                    <option value="">请选择专业</option>
+                    {profileMajors.map((major) => (
+                      <option value={major} key={major}>{major}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>昵称</span>
+                  <input value={profileForm.nickname} placeholder="可选，不填写则前台显示匿名用户" onChange={(event) => setProfileForm({ ...profileForm, nickname: event.target.value })} />
+                </label>
+              </div>
+              <div className="readonly-line">
+                学号：{studentNoFromEmail(session.profile.email) || session.profile.studentNo || "未识别"}；学校邮箱不可在此修改
+              </div>
+              {profileError && <p className="form-error">{profileError}</p>}
+              <div className="button-row">
+                <button className="primary-button" onClick={saveProfileEdit} disabled={profileSaving}>
+                  {profileSaving ? "保存中..." : "保存个人信息"}
+                </button>
+                <button className="secondary-button" onClick={() => setEditingProfile(false)} disabled={profileSaving}>取消</button>
+              </div>
+            </div>
+          )}
           <button className="secondary-button" onClick={cancel}>申请注销账号</button>
         </div>
         <div className="surface">
@@ -3850,20 +3956,30 @@ function PostList({
             </div>
             {showActions && (
               <div className="post-actions">
-              <button className="icon-button" title="点赞" onClick={(event) => {
-                event.stopPropagation();
-                onLike?.(post.id);
-              }}>
-                <Heart size={16} />
-                <span>{post.likes}</span>
-              </button>
-              <button className="icon-button" title="收藏" onClick={(event) => {
-                event.stopPropagation();
-                onFavorite?.(post.id);
-              }}>
-                <Star size={16} />
-                <span>{post.favorites}</span>
-              </button>
+                <button
+                  className={post.liked ? "icon-button active-interaction" : "icon-button"}
+                  title={post.liked ? "已点赞" : "点赞"}
+                  aria-pressed={Boolean(post.liked)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onLike?.(post.id);
+                  }}
+                >
+                  <Heart size={16} fill={post.liked ? "currentColor" : "none"} />
+                  <span>{post.likes}</span>
+                </button>
+                <button
+                  className={post.favorited ? "icon-button active-interaction" : "icon-button"}
+                  title={post.favorited ? "已收藏" : "收藏"}
+                  aria-pressed={Boolean(post.favorited)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onFavorite?.(post.id);
+                  }}
+                >
+                  <Star size={16} fill={post.favorited ? "currentColor" : "none"} />
+                  <span>{post.favorites}</span>
+                </button>
               {interactive && (
                 <button className="icon-button" title="举报" onClick={(event) => {
                   event.stopPropagation();

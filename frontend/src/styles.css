@@ -302,6 +302,12 @@ textarea:focus-visible {
   text-decoration: none;
 }
 
+.icon-button.active-interaction {
+  color: #0f172a;
+  background: #f8fafc;
+  border-color: rgba(15, 23, 42, 0.28);
+}
+
 .danger-button,
 .danger-icon {
   color: #b91c1c;
@@ -1272,6 +1278,12 @@ textarea {
   color: var(--text);
 }
 
+.profile-edit-panel {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0 18px;
+}
+
 .workbench-summary {
   display: grid;
   gap: 8px;
@@ -1604,6 +1616,11 @@ th {
   align-self: center;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.detail-actions {
+  justify-content: flex-start;
+  margin-top: 12px;
 }
 
 .status-pill {

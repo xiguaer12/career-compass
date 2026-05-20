@@ -251,6 +251,8 @@ public final class Dtos {
       String status,
       int likes,
       int favorites,
+      boolean liked,
+      boolean favorited,
       int replies,
       List<String> imageUrls,
       Instant createdAt

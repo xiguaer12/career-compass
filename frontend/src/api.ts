@@ -367,11 +367,11 @@ export const studentApi = {
 };
 
 export const communityApi = {
-  list: (params: Record<string, string> = {}) => {
+  list: (params: Record<string, string> = {}, token?: string) => {
     const search = new URLSearchParams(Object.entries(params).filter(([, value]) => Boolean(value))).toString();
-    return api<CommunityPost[]>(`/api/community/posts${search ? `?${search}` : ""}`);
+    return api<CommunityPost[]>(`/api/community/posts${search ? `?${search}` : ""}`, {}, token);
   },
-  detail: (id: number) => api<CommunityPost>(`/api/community/posts/${id}`),
+  detail: (id: number, token?: string) => api<CommunityPost>(`/api/community/posts/${id}`, {}, token),
   comments: (id: number) => api<CommunityComment[]>(`/api/community/posts/${id}/comments`),
   uploadImages: async (token: string, files: File[]) => {
     const formData = new FormData();

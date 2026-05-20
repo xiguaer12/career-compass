@@ -200,12 +200,13 @@ public class PublicApiController {
 
   @GetMapping("/community/posts")
   public ApiResponse<List<CommunityPost>> communityPosts(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
       @RequestParam(required = false) String path,
       @RequestParam(required = false) String type,
       @RequestParam(required = false) String keyword,
       @RequestParam(required = false) String sort
   ) {
-    return ApiResponse.ok(service.communityPosts(path, type, keyword, sort));
+    return ApiResponse.ok(service.communityPosts(path, type, keyword, sort, optionalStudentId(authorization)));
   }
 
   @PostMapping("/community/posts")
@@ -253,8 +254,11 @@ public class PublicApiController {
   }
 
   @GetMapping("/community/posts/{id}")
-  public ApiResponse<CommunityPost> communityPost(@PathVariable long id) {
-    return ApiResponse.ok(service.communityPost(id).orElseThrow(() -> new IllegalArgumentException("帖子不存在")));
+  public ApiResponse<CommunityPost> communityPost(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @PathVariable long id
+  ) {
+    return ApiResponse.ok(service.communityPost(id, optionalStudentId(authorization)).orElseThrow(() -> new IllegalArgumentException("帖子不存在")));
   }
 
   @GetMapping("/community/posts/{id}/comments")
@@ -315,6 +319,17 @@ public class PublicApiController {
   @PostMapping("/messages/read-all")
   public ApiResponse<Map<String, Object>> markAllMessagesRead(@RequestHeader("Authorization") String authorization) {
     return ApiResponse.message("消息已全部标记已读", service.markAllMessagesRead(security.requireStudent(authorization)));
+  }
+
+  private Long optionalStudentId(String authorization) {
+    if (authorization == null || authorization.isBlank()) {
+      return null;
+    }
+    try {
+      return security.requireStudent(authorization).id();
+    } catch (RuntimeException exception) {
+      return null;
+    }
   }
 
 }

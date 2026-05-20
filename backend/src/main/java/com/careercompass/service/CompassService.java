@@ -223,7 +223,7 @@ public class CompassService {
 
     long id = keyHolder.getKey().longValue();
     audit("student:" + email, "REGISTER", "student_account", String.valueOf(id), Map.of("email", email, "studentNo", studentNo, "college", profileRequest.college(), "major", profileRequest.major()));
-    createMessage(id, "系统", "注册成功", "基础档案已保存，可以直接开始 AI 访谈。", "/workspace");
+    createMessage(id, "系统", "注册成功", "个人信息已保存，可以直接开始 AI 访谈。", "/workspace");
     StudentProfile profile = findStudent(id).orElseThrow();
     return new Session(security.issueToken(id, email, "student"), "student", profile.status(), profile);
   }
@@ -665,13 +665,23 @@ public class CompassService {
     List<Map<String, String>> messages = request == null || request.messages() == null ? List.of() : request.messages();
     InterviewResponse fallback = fallbackInterview(messages, profile);
     InterviewResponse response = llmClient.interview(messages, profile, fallback);
+    Map<String, Object> persistedAnswers = new LinkedHashMap<>(response.answers() == null ? Map.of() : response.answers());
+    persistedAnswers.put("sourceMessages", interviewTranscript(messages, response.assistantMessage()));
     saveDraft(user, new AssessmentRequest(
         QUESTIONNAIRE_VERSION,
-        response.answers(),
+        persistedAnswers,
         "ai-interview",
         response.completionPercent()
     ));
-    return response;
+    return new InterviewResponse(
+        response.assistantMessage(),
+        persistedAnswers,
+        response.profileSummary(),
+        response.decisionSignals(),
+        response.completionPercent(),
+        response.readyToGenerate(),
+        response.missingFields()
+    );
   }
 
   public ReportTask submitAssessment(AuthUser user, AssessmentRequest request) {
@@ -866,7 +876,11 @@ public class CompassService {
   }
 
   public List<CommunityPost> communityPosts(String path, String type, String keyword, String sort) {
-    return queryCommunityPosts(false, path, type, keyword, sort);
+    return communityPosts(path, type, keyword, sort, null);
+  }
+
+  public List<CommunityPost> communityPosts(String path, String type, String keyword, String sort, Long viewerStudentId) {
+    return queryCommunityPosts(false, path, type, keyword, sort, viewerStudentId);
   }
 
   public List<CommunityPost> communityPosts() {
@@ -874,18 +888,26 @@ public class CompassService {
   }
 
   public List<CommunityPost> adminCommunityPosts() {
-    return queryCommunityPosts(true, null, null, null, "latest");
+    return queryCommunityPosts(true, null, null, null, "latest", null);
   }
 
   public Optional<CommunityPost> communityPost(long id) {
+    return communityPost(id, null);
+  }
+
+  public Optional<CommunityPost> communityPost(long id, Long viewerStudentId) {
+    List<Object> params = new ArrayList<>();
+    addInteractionParams(params, viewerStudentId);
+    params.add(id);
     List<CommunityPost> rows = jdbc.query(
         """
-        select p.*, case when p.anonymous = 1 then '匿名用户' else coalesce(s.nickname, s.name, '未命名用户') end as author_name
+        select p.*, case when p.anonymous = 1 then '匿名用户' else coalesce(s.nickname, s.name, '未命名用户') end as author_name,
+        """ + interactionSelectColumns(viewerStudentId) + """
         from community_post p join student_account s on s.id = p.student_id
         where p.id = ? and p.deleted_at is null and p.status = '已通过'
         """,
         (rs, rowNum) -> mapPost(rs),
-        id
+        params.toArray()
     );
     return rows.stream().findFirst();
   }
@@ -1094,17 +1116,23 @@ public class CompassService {
   public Map<String, Object> userCommunity(AuthUser user) {
     List<CommunityPost> ownPosts = jdbc.query(
         """
-        select p.*, case when p.anonymous = 1 then '匿名用户' else coalesce(s.nickname, s.name, '未命名用户') end as author_name
+        select p.*, case when p.anonymous = 1 then '匿名用户' else coalesce(s.nickname, s.name, '未命名用户') end as author_name,
+          exists(select 1 from community_interaction ii where ii.post_id = p.id and ii.student_id = ? and ii.interaction_type = 'like') as liked,
+          exists(select 1 from community_interaction ii where ii.post_id = p.id and ii.student_id = ? and ii.interaction_type = 'favorite') as favorited
         from community_post p join student_account s on s.id = p.student_id
         where p.student_id = ? and p.deleted_at is null
         order by p.created_at desc
         """,
         (rs, rowNum) -> mapPost(rs),
+        user.id(),
+        user.id(),
         user.id()
     );
     List<CommunityPost> favorites = jdbc.query(
         """
-        select p.*, case when p.anonymous = 1 then '匿名用户' else coalesce(s.nickname, s.name, '未命名用户') end as author_name
+        select p.*, case when p.anonymous = 1 then '匿名用户' else coalesce(s.nickname, s.name, '未命名用户') end as author_name,
+          exists(select 1 from community_interaction ii where ii.post_id = p.id and ii.student_id = ? and ii.interaction_type = 'like') as liked,
+          1 as favorited
         from community_interaction i
         join community_post p on p.id = i.post_id
         join student_account s on s.id = p.student_id
@@ -1112,6 +1140,7 @@ public class CompassService {
         order by i.created_at desc
         """,
         (rs, rowNum) -> mapPost(rs),
+        user.id(),
         user.id()
     );
     return Map.of("posts", ownPosts, "favorites", favorites);
@@ -2978,10 +3007,20 @@ public class CompassService {
         rs.getString("status"),
         rs.getInt("likes"),
         rs.getInt("favorites"),
+        booleanColumnOrFalse(rs, "liked"),
+        booleanColumnOrFalse(rs, "favorited"),
         rs.getInt("replies"),
         jsonToStringList(rs.getString("image_urls_json")),
         rs.getTimestamp("created_at").toInstant()
     );
+  }
+
+  private boolean booleanColumnOrFalse(ResultSet rs, String column) {
+    try {
+      return rs.getBoolean(column);
+    } catch (java.sql.SQLException exception) {
+      return false;
+    }
   }
 
   private void scheduleReportGeneration(long reportId, long studentId, String email, Map<String, Object> answers, String questionnaireVersion) {
@@ -3047,6 +3086,24 @@ public class CompassService {
       assistantMessage = nextFallbackQuestion(explorationTopics);
     }
     return new InterviewResponse(assistantMessage, answers, profileSummary, decisionSignals, completion, ready, explorationTopics);
+  }
+
+  private List<Map<String, String>> interviewTranscript(List<Map<String, String>> messages, String assistantMessage) {
+    List<Map<String, String>> transcript = new ArrayList<>();
+    if (messages != null) {
+      for (Map<String, String> message : messages) {
+        if (message == null) continue;
+        String role = message.get("role");
+        String content = message.get("content");
+        if (StringUtils.hasText(role) && StringUtils.hasText(content)) {
+          transcript.add(Map.of("role", role, "content", content));
+        }
+      }
+    }
+    if (StringUtils.hasText(assistantMessage)) {
+      transcript.add(Map.of("role", "assistant", "content", assistantMessage));
+    }
+    return transcript;
   }
 
   private Map<String, Object> extractInterviewAnswers(List<Map<String, String>> messages, StudentProfile profile) {
@@ -3180,7 +3237,7 @@ public class CompassService {
         List.of("路径分差较小时容易多线投入过散", "公开信息更新频繁，需要定期复核来源", "家庭、城市和经济约束可能改变最优排序"),
         List.of("主路径每周至少投入 4 个固定时间块", "备选路径每周保留 1 至 2 个低成本验证动作", "两周一次复核岗位/院校/考试窗口"),
         List.of(
-            new ActionPlan("30 天", List.of("补齐基础档案和材料清单", "完成主路径信息源订阅", "建立周复盘表")),
+            new ActionPlan("30 天", List.of("确认个人信息和材料清单", "完成主路径信息源订阅", "建立周复盘表")),
             new ActionPlan("60 天", List.of("完成不少于 20 个岗位/院校/岗位表对比", "形成主路径作品或证明材料", "完成一次模拟面试或阶段测验")),
             new ActionPlan("90 天", List.of("复核主路径与备选路径分差", "沉淀最终路径选择依据", "制定下一阶段月度计划"))
         ),
@@ -3221,7 +3278,93 @@ public class CompassService {
   }
 
   private int scoreFromAnswers(Map<String, Object> answers, String path, int fallback) {
-    return fallback;
+    String text = flattenAnswerText(answers);
+    int score = fallback + scoreSignals(text, path);
+    Object hypotheses = answers == null ? null : answers.get("pathHypotheses");
+    if (hypotheses instanceof List<?> rows) {
+      for (Object row : rows) {
+        if (!(row instanceof Map<?, ?> item)) continue;
+        String hypothesisPath = stringFromMap(item, "path");
+        if (!pathMatches(hypothesisPath, path)) continue;
+        String evidence = stringFromMap(item, "evidence");
+        String concern = stringFromMap(item, "concern");
+        if (StringUtils.hasText(evidence)) score += 8;
+        if (StringUtils.hasText(concern)) score -= textContainsAny(concern, List.of("不足", "风险", "压力", "成本", "不确定", "缺乏")) ? 5 : 2;
+      }
+    }
+    return score;
+  }
+
+  private String stringFromMap(Map<?, ?> map, String key) {
+    Object value = map.get(key);
+    return value == null ? "" : String.valueOf(value);
+  }
+
+  private int scoreSignals(String text, String path) {
+    if (!StringUtils.hasText(text)) return 0;
+    String normalized = text.toLowerCase(Locale.ROOT);
+    return switch (path) {
+      case "employment" -> keywordScore(normalized,
+          List.of("就业", "工作", "实习", "项目", "后端", "前端", "开发", "校招", "offer", "简历", "岗位", "高薪", "互联网"),
+          List.of("不想就业", "逃避就业", "没有项目", "项目不足"));
+      case "civil" -> keywordScore(normalized,
+          List.of("考公", "公务员", "事业编", "编制", "稳定", "国考", "省考", "选调", "体制"),
+          List.of("不想考公", "不喜欢稳定", "不接受体制"));
+      case "postgraduate" -> keywordScore(normalized,
+          List.of("考研", "读研", "升学", "研究生", "科研", "论文", "导师", "学历", "深造"),
+          List.of("不想考研", "不想读研", "备考压力", "不想科研"));
+      default -> 0;
+    };
+  }
+
+  private int keywordScore(String text, List<String> positive, List<String> negative) {
+    int score = 0;
+    for (String keyword : positive) {
+      if (text.contains(keyword.toLowerCase(Locale.ROOT))) score += 4;
+    }
+    for (String keyword : negative) {
+      if (text.contains(keyword.toLowerCase(Locale.ROOT))) score -= 6;
+    }
+    return Math.max(-18, Math.min(18, score));
+  }
+
+  private boolean pathMatches(String value, String path) {
+    if (!StringUtils.hasText(value)) return false;
+    return switch (path) {
+      case "employment" -> value.contains("就业") || value.toLowerCase(Locale.ROOT).contains("employment");
+      case "civil" -> value.contains("考公") || value.contains("公务员") || value.toLowerCase(Locale.ROOT).contains("civil");
+      case "postgraduate" -> value.contains("考研") || value.contains("升学") || value.toLowerCase(Locale.ROOT).contains("postgraduate");
+      default -> false;
+    };
+  }
+
+  private boolean textContainsAny(String text, List<String> keywords) {
+    if (!StringUtils.hasText(text)) return false;
+    for (String keyword : keywords) {
+      if (StringUtils.hasText(keyword) && text.contains(keyword)) return true;
+    }
+    return false;
+  }
+
+  private String flattenAnswerText(Object value) {
+    if (value == null) return "";
+    if (value instanceof Map<?, ?> map) {
+      StringBuilder builder = new StringBuilder();
+      map.forEach((key, item) -> builder
+          .append(' ')
+          .append(key == null ? "" : key)
+          .append(' ')
+          .append(flattenAnswerText(item)));
+      return builder.toString();
+    }
+    if (value instanceof Iterable<?> iterable) {
+      StringBuilder builder = new StringBuilder();
+      for (Object item : iterable) {
+        builder.append(' ').append(flattenAnswerText(item));
+      }
+      return builder.toString();
+    }
+    return String.valueOf(value);
   }
 
   private void validateAuth(AuthRequest request) {
@@ -3390,9 +3533,6 @@ public class CompassService {
     if ("注销中".equals(profile.status()) || "已注销".equals(profile.status()) || "已禁用".equals(profile.status())) {
       throw new IllegalArgumentException("当前账号状态不允许继续操作");
     }
-    if ("待补全档案".equals(profile.status())) {
-      throw new IllegalArgumentException("请先补全基础档案");
-    }
   }
 
   private void ensureLlmAvailable() {
@@ -3402,7 +3542,7 @@ public class CompassService {
   private void requireCompletedStudent(AuthUser user) {
     StudentProfile profile = me(user);
     if (!"已完成引导".equals(profile.status())) {
-      throw new IllegalArgumentException("请先完成基础档案和 AI 访谈");
+      throw new IllegalArgumentException("请先完成 AI 访谈并生成报告");
     }
   }
 
@@ -3413,15 +3553,34 @@ public class CompassService {
     }
   }
 
-  private List<CommunityPost> queryCommunityPosts(boolean admin, String path, String type, String keyword, String sort) {
+  private String interactionSelectColumns(Long viewerStudentId) {
+    if (viewerStudentId == null || viewerStudentId <= 0) {
+      return "0 as liked, 0 as favorited\n";
+    }
+    return """
+          exists(select 1 from community_interaction ii where ii.post_id = p.id and ii.student_id = ? and ii.interaction_type = 'like') as liked,
+          exists(select 1 from community_interaction ii where ii.post_id = p.id and ii.student_id = ? and ii.interaction_type = 'favorite') as favorited
+        """;
+  }
+
+  private void addInteractionParams(List<Object> params, Long viewerStudentId) {
+    if (viewerStudentId != null && viewerStudentId > 0) {
+      params.add(viewerStudentId);
+      params.add(viewerStudentId);
+    }
+  }
+
+  private List<CommunityPost> queryCommunityPosts(boolean admin, String path, String type, String keyword, String sort, Long viewerStudentId) {
     StringBuilder sql = new StringBuilder(
         """
-        select p.*, case when p.anonymous = 1 then '匿名用户' else coalesce(s.nickname, s.name, '未命名用户') end as author_name
+        select p.*, case when p.anonymous = 1 then '匿名用户' else coalesce(s.nickname, s.name, '未命名用户') end as author_name,
+        """ + interactionSelectColumns(viewerStudentId) + """
         from community_post p join student_account s on s.id = p.student_id
         where p.deleted_at is null
         """
     );
     List<Object> params = new ArrayList<>();
+    addInteractionParams(params, viewerStudentId);
     if (!admin) sql.append(" and p.status = '已通过'");
     if (StringUtils.hasText(path)) {
       sql.append(" and p.path = ?");
