@@ -72,6 +72,7 @@ public class CompassService {
   private final ObjectMapper objectMapper;
   private final SecurityService security;
   private final LlmClient llmClient;
+  private final EmailVerificationService emailVerificationService;
   private final HttpClient crawlHttpClient = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(12))
       .followRedirects(HttpClient.Redirect.NORMAL)
@@ -115,7 +116,8 @@ public class CompassService {
       JdbcTemplate jdbc,
       ObjectMapper objectMapper,
       SecurityService security,
-      LlmClient llmClient
+      LlmClient llmClient,
+      EmailVerificationService emailVerificationService
   ) {
     this.studentEmailPattern = Pattern.compile(studentEmailPattern, Pattern.CASE_INSENSITIVE);
     this.autoCrawlEnabled = autoCrawlEnabled;
@@ -130,6 +132,7 @@ public class CompassService {
     this.objectMapper = objectMapper;
     this.security = security;
     this.llmClient = llmClient;
+    this.emailVerificationService = emailVerificationService;
   }
 
   @PostConstruct
@@ -196,6 +199,7 @@ public class CompassService {
         Map.of("hideSensitive", true)
     );
     validateProfile(0, profileRequest, studentNo);
+    emailVerificationService.verifyRegisterCode(email, request.verificationCode());
 
     KeyHolder keyHolder = new GeneratedKeyHolder();
     jdbc.update(connection -> {
@@ -226,6 +230,19 @@ public class CompassService {
     createMessage(id, "系统", "注册成功", "个人信息已保存，可以直接开始 AI 访谈。", "/workspace");
     StudentProfile profile = findStudent(id).orElseThrow();
     return new Session(security.issueToken(id, email, "student"), "student", profile.status(), profile);
+  }
+
+  public EmailCodeResult sendRegisterCode(EmailCodeRequest request) {
+    if (request == null || !StringUtils.hasText(request.email())) {
+      throw new IllegalArgumentException("邮箱不能为空");
+    }
+    String email = normalizeEmail(request.email());
+    validateEmailDomain(email);
+    Integer existing = jdbc.queryForObject("select count(*) from student_account where email = ?", Integer.class, email);
+    if (existing != null && existing > 0) {
+      throw new IllegalArgumentException("该邮箱已注册，请直接登录");
+    }
+    return emailVerificationService.sendRegisterCode(email);
   }
 
   public Session login(AuthRequest request) {
@@ -1264,7 +1281,8 @@ public class CompassService {
               toInstantString(rs.getTimestamp("updated_at")),
               rs.getString("last_task_status"),
               rs.getString("last_task_message"),
-              toInstantString(rs.getTimestamp("last_task_at"))
+              toInstantString(rs.getTimestamp("last_task_at")),
+              jsonToMap(rs.getString("parser_rule_json"))
           );
         }
     );
@@ -1770,9 +1788,21 @@ public class CompassService {
       return statement;
     }, taskKey);
     long taskId = taskKey.getKey().longValue();
-    String sourceUrl = String.valueOf(source.get("source_url"));
+    List<String> sourceUrls = sourceCandidateUrls(source);
     try {
-      CrawledPage entryPage = fetchCrawlPage(sourceUrl);
+      List<String> fetchErrors = new ArrayList<>();
+      CrawledPage entryPage = null;
+      for (String candidateUrl : sourceUrls) {
+        try {
+          entryPage = fetchCrawlPage(candidateUrl);
+          break;
+        } catch (Exception exception) {
+          fetchErrors.add(candidateUrl + "：" + trimText(valueOr(exception.getMessage(), "抓取失败"), 180));
+        }
+      }
+      if (entryPage == null) {
+        throw new IllegalStateException("所有来源地址抓取失败；" + String.join("；", fetchErrors));
+      }
       List<CrawledPage> pages = crawlPagesForSource(source, entryPage);
       int created = 0;
       int skipped = 0;
@@ -1816,6 +1846,39 @@ public class CompassService {
       audit(actor, "FAIL_CRAWL", "data_source", String.valueOf(sourceId), Map.of("taskId", taskId, "reason", message));
       return Map.of("sourceId", sourceId, "taskId", taskId, "taskStatus", "失败", "message", message, "createdAt", Instant.now().toString());
     }
+  }
+
+  private List<String> sourceCandidateUrls(Map<String, Object> source) {
+    List<String> urls = new ArrayList<>();
+    Object primary = source.get("source_url");
+    if (primary != null && StringUtils.hasText(String.valueOf(primary))) {
+      urls.add(String.valueOf(primary));
+    }
+    Map<String, Object> rule = sourceParserRule(source);
+    Object fallbackUrls = rule.get("fallbackUrls");
+    if (fallbackUrls instanceof Iterable<?> values) {
+      for (Object value : values) {
+        if (value != null && StringUtils.hasText(String.valueOf(value))) {
+          urls.add(String.valueOf(value));
+        }
+      }
+    }
+    Object mirrorUrl = rule.get("mirrorUrl");
+    if (mirrorUrl != null && StringUtils.hasText(String.valueOf(mirrorUrl))) {
+      urls.add(String.valueOf(mirrorUrl));
+    }
+    return urls.stream()
+        .map(String::trim)
+        .filter(StringUtils::hasText)
+        .distinct()
+        .limit(5)
+        .toList();
+  }
+
+  private Map<String, Object> sourceParserRule(Map<String, Object> source) {
+    Object raw = source.get("parser_rule_json");
+    if (raw == null) return Map.of();
+    return jsonToMap(String.valueOf(raw));
   }
 
   private void startAutoCrawlScheduler() {
@@ -2133,7 +2196,7 @@ public class CompassService {
         ));
       }
     }
-    return links.isEmpty() ? List.of(entryPage) : pages;
+    return pages.isEmpty() ? List.of(entryPage) : pages;
   }
 
   private List<LinkCandidate> extractActionableLinks(String baseUrl, String html, String path) {
@@ -2232,22 +2295,31 @@ public class CompassService {
   private CrawledPage fetchCrawlPage(String sourceUrl) throws Exception {
     URI uri = validateCrawlUri(sourceUrl);
     HttpResponse<String> response = null;
-    for (int redirects = 0; redirects < 4; redirects++) {
-      HttpRequest request = HttpRequest.newBuilder(uri)
-          .timeout(Duration.ofSeconds(20))
-          .header("User-Agent", "CareerCompassBot/1.0 (+reviewed education information crawler)")
-          .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5")
-          .GET()
-          .build();
-      response = crawlHttpClient.send(request, HttpResponse.BodyHandlers.ofString());
-      if (response.statusCode() < 300 || response.statusCode() >= 400) break;
-      Optional<String> location = response.headers().firstValue("location");
-      if (location.isEmpty()) break;
-      uri = validateCrawlUri(uri.resolve(location.get()).toString());
+    List<String> userAgents = List.of(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "CareerCompassBot/1.0 (+reviewed education information crawler)"
+    );
+    for (String userAgent : userAgents) {
+      URI current = uri;
+      for (int redirects = 0; redirects < 4; redirects++) {
+        HttpRequest request = crawlRequest(current, userAgent);
+        response = crawlHttpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 300 || response.statusCode() >= 400) break;
+        Optional<String> location = response.headers().firstValue("location");
+        if (location.isEmpty()) break;
+        current = validateCrawlUri(current.resolve(location.get()).toString());
+      }
+      if (response == null || !List.of(401, 403, 429).contains(response.statusCode())) {
+        uri = current;
+        break;
+      }
     }
     if (response == null) throw new IllegalStateException("来源请求未返回响应");
     if (response.statusCode() < 200 || response.statusCode() >= 300) {
-      throw new IllegalStateException("来源返回 HTTP " + response.statusCode());
+      String deniedHint = List.of(401, 403, 429).contains(response.statusCode())
+          ? "，来源拒绝访问；已尝试浏览器请求头，可在后台为该数据源配置 fallbackUrls 或更换公开入口"
+          : "";
+      throw new IllegalStateException("来源返回 HTTP " + response.statusCode() + deniedHint);
     }
     String body = response.body();
     if (!StringUtils.hasText(body)) {
@@ -2260,6 +2332,22 @@ public class CompassService {
       throw new IllegalStateException("来源正文过短，无法形成候选资讯");
     }
     return new CrawledPage(uri.toString(), title, trimText(text, 12000), body);
+  }
+
+  private HttpRequest crawlRequest(URI uri, String userAgent) {
+    String referer = uri.getScheme() + "://" + uri.getHost() + "/";
+    return HttpRequest.newBuilder(uri)
+        .version(HttpClient.Version.HTTP_1_1)
+        .timeout(Duration.ofSeconds(20))
+        .header("User-Agent", userAgent)
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5")
+        .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.6")
+        .header("Cache-Control", "no-cache")
+        .header("Pragma", "no-cache")
+        .header("Referer", referer)
+        .header("Upgrade-Insecure-Requests", "1")
+        .GET()
+        .build();
   }
 
   private URI validateCrawlUri(String sourceUrl) {
@@ -2695,6 +2783,58 @@ public class CompassService {
         ),
         "insights", List.of("就业准备要用岗位要求倒推能力证据，不能只等招聘信息出现。")
     ), "参考教育部国家大学生就业服务平台与校园招聘专项行动公开信息整理。", "国家大学生就业服务平台", "https://www.24365.ncss.cn/student/jobs/index.html", "公开", "图表中心", "已发布");
+    seedChart(9, "三路径准备成本与反馈速度", "雷达图", "全部", Map.of(
+        "rows", List.of(
+            Map.of("subject", "信息透明", "就业", 72, "考研", 64, "考公", 86),
+            Map.of("subject", "准备周期", "就业", 78, "考研", 58, "考公", 66),
+            Map.of("subject", "现金流压力", "就业", 82, "考研", 46, "考公", 62),
+            Map.of("subject", "反馈速度", "就业", 84, "考研", 48, "考公", 55),
+            Map.of("subject", "能力可迁移", "就业", 80, "考研", 76, "考公", 60)
+        ),
+        "xKey", "subject",
+        "series", List.of(
+            Map.of("key", "就业", "name", "就业", "color", "#b45309"),
+            Map.of("key", "考研", "name", "考研", "color", "#0f766e"),
+            Map.of("key", "考公", "name", "考公", "color", "#2563eb")
+        ),
+        "insights", List.of("就业通常反馈更快，考研更依赖长期投入，考公的信息透明度更高但岗位限制更强。", "该图用于帮助学生理解投入结构，不代表个人最终匹配度。")
+    ), "按三路径典型准备动作、反馈周期和公开信息透明度进行规划型对比，供报告解释使用。", "Career Compass 规划模型", "公开", "图表中心", "已发布");
+    seedChart(10, "就业岗位能力需求拆解", "环图", "就业", Map.of(
+        "rows", List.of(
+            Map.of("label", "项目经历", "value", 32, "color", "#b45309"),
+            Map.of("label", "实习/实践", "value", 24, "color", "#2563eb"),
+            Map.of("label", "技术证据", "value", 18, "color", "#0f766e"),
+            Map.of("label", "沟通表达", "value", 14, "color", "#be123c"),
+            Map.of("label", "投递复盘", "value", 12, "color", "#475569")
+        ),
+        "nameKey", "label",
+        "valueKey", "value",
+        "insights", List.of("就业路径更看重可被面试追问验证的经历证据。", "简历优化应从项目结果、实习任务和岗位关键词三处同步推进。")
+    ), "根据校招简历筛选常见材料类型整理为规划参考比例。", "Career Compass 规划模型", "公开", "图表中心", "已发布");
+    seedChart(11, "考研择校关注因素权重", "柱状图", "考研", Map.of(
+        "rows", List.of(
+            Map.of("label", "专业匹配", "importance", 34),
+            Map.of("label", "考试科目", "importance", 26),
+            Map.of("label", "复试比例", "importance", 18),
+            Map.of("label", "地区成本", "importance", 12),
+            Map.of("label", "调剂空间", "importance", 10)
+        ),
+        "xKey", "label",
+        "series", List.of(Map.of("key", "importance", "name", "关注权重", "color", "#0f766e")),
+        "insights", List.of("择校先看专业与科目，再看复试和调剂风险。", "只看学校名气容易低估科目切换和复试信息差。")
+    ), "按研招信息核对流程拆解择校变量，作为目标院校梯度表的字段建议。", "Career Compass 规划模型", "公开", "图表中心", "已发布");
+    seedChart(12, "考公备考模块投入建议", "柱状图", "考公", Map.of(
+        "rows", List.of(
+            Map.of("label", "岗位筛选", "hours", 18),
+            Map.of("label", "行测模块", "hours", 42),
+            Map.of("label", "申论训练", "hours", 28),
+            Map.of("label", "时政积累", "hours", 16),
+            Map.of("label", "面试预案", "hours", 12)
+        ),
+        "xKey", "label",
+        "series", List.of(Map.of("key", "hours", "name", "月度建议投入小时", "color", "#2563eb")),
+        "insights", List.of("岗位筛选应前置，避免刷题后发现资格条件不匹配。", "申论和面试表达需要持续反馈，不适合只在考前突击。")
+    ), "按考公准备阶段的典型任务拆解月度投入建议，实际应结合目标岗位调整。", "Career Compass 规划模型", "公开", "图表中心", "已发布");
     seedTag("考公", "路径标签", 1);
     seedTag("考研", "路径标签", 2);
     seedTag("就业", "路径标签", 3);
@@ -2703,8 +2843,8 @@ public class CompassService {
     seedTag("经验帖", "内容标签", 1);
     seedTag("问答", "内容标签", 2);
     seedAiConfig("questionnaire", QUESTIONNAIRE_VERSION, "开放访谈素材模板", "围绕学生原始叙述、关键经历、价值取向、现实约束、情绪压力、资源条件、路径假设和未说透的矛盾进行开放整理。", "已发布");
-    seedAiConfig("report_template", TEMPLATE_VERSION, "开放式报告模板", "基于学生开放访谈素材直接写一篇完整自然语言报告。可以比较考公、考研、就业，也可以按学生真实情况自由组织判断，不要求输出评分、固定维度或固定行动计划。", "已发布");
-    seedAiConfig("prompt", PROMPT_VERSION, "报告生成提示词", "像读完访谈记录的咨询老师一样综合判断学生经历、动机、约束、情绪压力、资源条件和未说透的矛盾；报告只供辅助决策，不输出录取、上岸、就业结果承诺。", "已发布");
+    seedAiConfig("report_template", TEMPLATE_VERSION, "开放式报告模板", "基于学生开放访谈素材直接写一篇完整自然语言报告。可以比较考公、考研、就业，也可以按学生真实情况自由组织判断，并自然解释系统动态评分和推荐排序。", "已发布");
+    seedAiConfig("prompt", PROMPT_VERSION, "报告生成提示词", "像读完访谈记录的咨询老师一样综合判断学生经历、动机、约束、情绪压力、资源条件和未说透的矛盾；结合考公、考研、就业三路径动态评分解释推荐排序；报告只供辅助决策，不输出录取、上岸、就业结果承诺。", "已发布");
     seedAiConfig("disclaimer", "DISC-2026.05", "AI 免责声明", "AI 报告仅供辅助决策，不替代学生最终选择。", "已发布");
   }
 
@@ -3041,8 +3181,8 @@ public class CompassService {
             questionnaireVersion,
             TEMPLATE_VERSION,
             PROMPT_VERSION,
-            latestAiConfigContent("report_template", "基于学生开放访谈素材直接写一篇完整自然语言报告，不要求输出评分、固定维度或固定行动计划。"),
-            latestAiConfigContent("prompt", "像读完访谈记录的咨询老师一样综合判断学生经历、动机、约束、情绪压力、资源条件和未说透的矛盾；报告只供辅助决策，不输出录取、上岸、就业结果承诺。"),
+            latestAiConfigContent("report_template", "基于学生开放访谈素材直接写一篇完整自然语言报告，并自然解释系统已计算的考公、考研、就业动态评分。"),
+            latestAiConfigContent("prompt", "像读完访谈记录的咨询老师一样综合判断学生经历、动机、约束、情绪压力、资源条件和未说透的矛盾；结合三路径动态评分解释推荐排序；报告只供辅助决策，不输出录取、上岸、就业结果承诺。"),
             latestAiConfigContent("disclaimer", "AI 报告仅供辅助决策，不替代学生最终选择。"),
             fallback
         );
@@ -3331,14 +3471,14 @@ public class CompassService {
     String normalized = text.toLowerCase(Locale.ROOT);
     return switch (path) {
       case "employment" -> keywordScore(normalized,
-          List.of("就业", "工作", "实习", "项目", "后端", "前端", "开发", "校招", "offer", "简历", "岗位", "高薪", "互联网"),
-          List.of("不想就业", "逃避就业", "没有项目", "项目不足"));
+          List.of("就业", "工作", "实习", "项目", "后端", "前端", "开发", "产品", "运营", "测试", "校招", "offer", "简历", "岗位", "高薪", "互联网", "作品集", "面试", "笔试", "尽快赚钱", "现金流", "收入"),
+          List.of("不想就业", "逃避就业", "没有项目", "项目不足", "不想进厂", "不想工作"));
       case "civil" -> keywordScore(normalized,
-          List.of("考公", "公务员", "事业编", "编制", "稳定", "国考", "省考", "选调", "体制"),
-          List.of("不想考公", "不喜欢稳定", "不接受体制"));
+          List.of("考公", "公务员", "事业编", "编制", "稳定", "国考", "省考", "选调", "体制", "基层", "申论", "行测", "家里希望稳定", "户口", "公共服务"),
+          List.of("不想考公", "不喜欢稳定", "不接受体制", "不想刷题", "讨厌体制"));
       case "postgraduate" -> keywordScore(normalized,
-          List.of("考研", "读研", "升学", "研究生", "科研", "论文", "导师", "学历", "深造"),
-          List.of("不想考研", "不想读研", "备考压力", "不想科研"));
+          List.of("考研", "读研", "升学", "研究生", "科研", "论文", "导师", "学历", "深造", "保研", "调剂", "复试", "学硕", "专硕", "专业课", "实验室"),
+          List.of("不想考研", "不想读研", "备考压力", "不想科研", "不想延期", "经济压力大"));
       default -> 0;
     };
   }
@@ -3961,7 +4101,8 @@ public class CompassService {
 
   private Map<String, Object> jsonToMap(String json) {
     try {
-      return objectMapper.readValue(json, new TypeReference<>() {});
+      Map<String, Object> value = objectMapper.readValue(json, new TypeReference<>() {});
+      return value == null ? Map.of() : value;
     } catch (Exception exception) {
       return Map.of();
     }

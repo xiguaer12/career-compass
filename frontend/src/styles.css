@@ -432,6 +432,10 @@ textarea:focus-visible {
   grid-column: 1 / -1;
 }
 
+.form-grid .full-span {
+  grid-column: 1 / -1;
+}
+
 .inline-admin {
   margin: 0 auto;
   max-width: 460px;
@@ -451,6 +455,14 @@ textarea:focus-visible {
 .inline-control input {
   min-width: 0;
   flex: 1;
+}
+
+.verification-code-control {
+  align-items: stretch;
+}
+
+.verification-code-control .secondary-button {
+  min-width: 118px;
 }
 
 .filter-row {
@@ -620,10 +632,16 @@ textarea:focus-visible {
 }
 
 .helper-text,
+.field-hint,
 .empty-state {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+.field-hint {
+  display: block;
+  margin-top: 6px;
 }
 
 .form-error {
@@ -903,6 +921,44 @@ textarea:focus-visible {
   gap: 18px;
 }
 
+.path-report-panel {
+  border-top: 4px solid #172033;
+}
+
+.path-score-radar {
+  min-height: 220px;
+  margin-top: -8px;
+}
+
+.compact-score-list {
+  gap: 8px;
+}
+
+.compact-score-list .score-row {
+  grid-template-columns: minmax(72px, 0.8fr) minmax(90px, 1fr) 38px;
+  padding: 10px;
+}
+
+.selected-score-row {
+  border-color: rgba(23, 32, 51, 0.38);
+  box-shadow: inset 3px 0 0 #172033;
+}
+
+.path-score-reasons {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.path-score-reasons span {
+  border-left: 3px solid var(--blue);
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #334155;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
 .path-news-main .queue-list {
   gap: 14px;
 }
@@ -1111,6 +1167,10 @@ textarea {
   min-height: 128px;
   padding: 12px;
   resize: vertical;
+}
+
+.compact-textarea {
+  min-height: 86px;
 }
 
 .code-textarea {
@@ -2033,6 +2093,10 @@ th {
   }
 
   .score-row {
+    grid-template-columns: 1fr;
+  }
+
+  .compact-score-list .score-row {
     grid-template-columns: 1fr;
   }
 

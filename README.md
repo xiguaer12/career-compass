@@ -17,6 +17,12 @@ copy .env.example .env
 docker compose up --build
 ```
 
+注册验证码使用 Spring Boot Mail + QQ 邮箱 SMTP。启动前在 `.env` 中填写：
+
+- `QQ_MAIL_USERNAME`：用于发信的 QQ 邮箱地址
+- `QQ_MAIL_SMTP_AUTH_CODE`：QQ 邮箱“POP3/SMTP服务”生成的 SMTP 授权码，不是邮箱登录密码
+- `MAIL_VERIFICATION_ENABLED=true`：开启注册验证码校验
+
 完整容器启动后访问：
 
 - 前端：`http://localhost`
@@ -44,6 +50,7 @@ npm run dev
 
 ## 主要接口
 
+- `POST /api/auth/register-code`
 - `POST /api/auth/register`
 - `POST /api/auth/login`
 - `GET /api/path/{civil-exam|postgraduate|employment}`

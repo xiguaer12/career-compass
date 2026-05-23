@@ -110,6 +110,59 @@ VALUES
       json_object('stage','9-11 月','description','跟进秋招、专场招聘和宣讲会，记录投递转化率。'),
       json_object('stage','12 月以后','description','进行 offer 对比、补录关注和毕业去向材料确认。')
     ), 'insights', json_array('就业准备要用岗位要求倒推能力证据，不能只等招聘信息出现。')), '参考教育部国家大学生就业服务平台与校园招聘专项行动公开信息整理。', '国家大学生就业服务平台', 'https://www.24365.ncss.cn/student/jobs/index.html', '已发布', '公开', '图表中心')
+  ,
+  (9, '三路径准备成本与反馈速度', '雷达图', '全部', json_object(
+      'xKey','subject',
+      'series', json_array(
+        json_object('key','就业','name','就业','color','#b45309'),
+        json_object('key','考研','name','考研','color','#0f766e'),
+        json_object('key','考公','name','考公','color','#2563eb')
+      ),
+      'insights', json_array('就业通常反馈更快，考研更依赖长期投入，考公的信息透明度更高但岗位限制更强。','该图用于帮助学生理解投入结构，不代表个人最终匹配度。'),
+      'rows', json_array(
+        json_object('subject','信息透明','就业',72,'考研',64,'考公',86),
+        json_object('subject','准备周期','就业',78,'考研',58,'考公',66),
+        json_object('subject','现金流压力','就业',82,'考研',46,'考公',62),
+        json_object('subject','反馈速度','就业',84,'考研',48,'考公',55),
+        json_object('subject','能力可迁移','就业',80,'考研',76,'考公',60)
+      )
+    ), '按三路径典型准备动作、反馈周期和公开信息透明度进行规划型对比，供报告解释使用。', 'Career Compass 规划模型', NULL, '已发布', '公开', '图表中心'),
+  (10, '就业岗位能力需求拆解', '环图', '就业', json_object(
+      'nameKey','label',
+      'valueKey','value',
+      'insights', json_array('就业路径更看重可被面试追问验证的经历证据。','简历优化应从项目结果、实习任务和岗位关键词三处同步推进。'),
+      'rows', json_array(
+        json_object('label','项目经历','value',32,'color','#b45309'),
+        json_object('label','实习/实践','value',24,'color','#2563eb'),
+        json_object('label','技术证据','value',18,'color','#0f766e'),
+        json_object('label','沟通表达','value',14,'color','#be123c'),
+        json_object('label','投递复盘','value',12,'color','#475569')
+      )
+    ), '根据校招简历筛选常见材料类型整理为规划参考比例。', 'Career Compass 规划模型', NULL, '已发布', '公开', '图表中心'),
+  (11, '考研择校关注因素权重', '柱状图', '考研', json_object(
+      'xKey','label',
+      'series', json_array(json_object('key','importance','name','关注权重','color','#0f766e')),
+      'insights', json_array('择校先看专业与科目，再看复试和调剂风险。','只看学校名气容易低估科目切换和复试信息差。'),
+      'rows', json_array(
+        json_object('label','专业匹配','importance',34),
+        json_object('label','考试科目','importance',26),
+        json_object('label','复试比例','importance',18),
+        json_object('label','地区成本','importance',12),
+        json_object('label','调剂空间','importance',10)
+      )
+    ), '按研招信息核对流程拆解择校变量，作为目标院校梯度表的字段建议。', 'Career Compass 规划模型', NULL, '已发布', '公开', '图表中心'),
+  (12, '考公备考模块投入建议', '柱状图', '考公', json_object(
+      'xKey','label',
+      'series', json_array(json_object('key','hours','name','月度建议投入小时','color','#2563eb')),
+      'insights', json_array('岗位筛选应前置，避免刷题后发现资格条件不匹配。','申论和面试表达需要持续反馈，不适合只在考前突击。'),
+      'rows', json_array(
+        json_object('label','岗位筛选','hours',18),
+        json_object('label','行测模块','hours',42),
+        json_object('label','申论训练','hours',28),
+        json_object('label','时政积累','hours',16),
+        json_object('label','面试预案','hours',12)
+      )
+    ), '按考公准备阶段的典型任务拆解月度投入建议，实际应结合目标岗位调整。', 'Career Compass 规划模型', NULL, '已发布', '公开', '图表中心')
 ON DUPLICATE KEY UPDATE
   title = VALUES(title),
   chart_type = VALUES(chart_type),
@@ -122,7 +175,7 @@ ON DUPLICATE KEY UPDATE
   visibility = VALUES(visibility),
   display_position = VALUES(display_position);
 
-UPDATE chart_info SET filters_json = JSON_OBJECT() WHERE id BETWEEN 1 AND 8;
+UPDATE chart_info SET filters_json = JSON_OBJECT() WHERE id BETWEEN 1 AND 12;
 
 INSERT INTO path_page_config
   (path_key, name, intro, suitable_json, timeline_json, pitfalls_json, accent, match_score, sort_order, status)
@@ -214,8 +267,8 @@ ON DUPLICATE KEY UPDATE status = VALUES(status), sort_order = VALUES(sort_order)
 INSERT INTO ai_config (config_type, version, title, content, status, published_at)
 VALUES
   ('questionnaire', 'QNR-2026.05', 'AI 开放访谈素材模板', '通过自然对话保留学生原始叙述、关键经历、价值排序、现实约束、情绪压力、资源条件、路径假设和仍需探索的问题，不要求固定问卷字段。', '已发布', current_timestamp),
-  ('report_template', 'RPTTPL-2026.05', '开放式报告模板', '直接写一篇面向学生阅读的自然语言报告。可以使用小标题、段落、列表或 Markdown，自行组织学生画像、判断依据、不确定性、路径比较和下一步建议；不要输出固定评分表。', '已发布', current_timestamp),
-  ('prompt', 'PROMPT-2026.05', '报告生成提示词', '基于开放访谈素材和基础档案综合判断学生经历、动机、约束、情绪压力、资源条件和未说透的矛盾；不承诺录取、上岸或就业结果。', '已发布', current_timestamp),
+  ('report_template', 'RPTTPL-2026.05', '开放式报告模板', '直接写一篇面向学生阅读的自然语言报告。可以使用小标题、段落、列表或 Markdown，自行组织学生画像、判断依据、不确定性、路径比较和下一步建议；需要自然解释系统动态评分和推荐排序。', '已发布', current_timestamp),
+  ('prompt', 'PROMPT-2026.05', '报告生成提示词', '基于开放访谈素材和基础档案综合判断学生经历、动机、约束、情绪压力、资源条件和未说透的矛盾；结合考公、考研、就业三路径动态评分解释推荐排序；不承诺录取、上岸或就业结果。', '已发布', current_timestamp),
   ('disclaimer', 'DISC-2026.05', 'AI 免责声明', 'AI 报告仅供辅助决策，不替代学生最终选择。', '已发布', current_timestamp)
 ON DUPLICATE KEY UPDATE
   title = VALUES(title),

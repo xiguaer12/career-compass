@@ -620,6 +620,7 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
   const [registerProfile, setRegisterProfile] = useState({
     name: "",
     college: "",
@@ -629,11 +630,35 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
   });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [codeLoading, setCodeLoading] = useState(false);
+  const [codeMessage, setCodeMessage] = useState("");
+  const [codeCooldown, setCodeCooldown] = useState(0);
   const [showPassword, setShowPassword] = useState(false);
   const registerMajors = majorsForCollege(registerProfile.college);
 
+  useEffect(() => {
+    if (codeCooldown <= 0) return;
+    const timer = window.setTimeout(() => setCodeCooldown((current) => Math.max(0, current - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [codeCooldown]);
+
   function updateRegisterProfile(patch: Partial<typeof registerProfile>) {
     setRegisterProfile((current) => ({ ...current, ...patch }));
+  }
+
+  async function sendRegisterCode() {
+    setError("");
+    setCodeMessage("");
+    setCodeLoading(true);
+    try {
+      const result = await authApi.sendRegisterCode(email);
+      setCodeCooldown(result.cooldownSeconds || 60);
+      setCodeMessage(`验证码已发送至 ${result.email}，${Math.floor((result.expiresInSeconds || 600) / 60)} 分钟内有效。`);
+    } catch (exception) {
+      setError(exception instanceof Error ? exception.message : "验证码发送失败");
+    } finally {
+      setCodeLoading(false);
+    }
   }
 
   async function submit() {
@@ -646,6 +671,7 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
         onSession(await authApi.register({
           email,
           password,
+          verificationCode,
           ...registerProfile
         }));
       }
@@ -668,7 +694,10 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
         </div>
         <div className="segmented auth-switch">
           <button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>登录</button>
-          <button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>注册</button>
+          <button className={mode === "register" ? "active" : ""} onClick={() => {
+            setMode("register");
+            setCodeMessage("");
+          }}>注册</button>
         </div>
         <label>
           <span>学校邮箱</span>
@@ -694,6 +723,16 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
         </label>
         {mode === "register" && (
           <div className="register-profile-grid">
+            <label className="full-span">
+              <span>邮箱验证码</span>
+              <div className="inline-control verification-code-control">
+                <input value={verificationCode} maxLength={6} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))} />
+                <button className="secondary-button" type="button" onClick={sendRegisterCode} disabled={codeLoading || codeCooldown > 0}>
+                  {codeLoading ? "发送中" : codeCooldown > 0 ? `${codeCooldown}s` : "发送验证码"}
+                </button>
+              </div>
+              {codeMessage && <small className="field-hint">{codeMessage}</small>}
+            </label>
             <label>
               <span>姓名</span>
               <input value={registerProfile.name} onChange={(event) => updateRegisterProfile({ name: event.target.value })} />
@@ -724,7 +763,7 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
         )}
         {error && <p className="form-error">{error}</p>}
         <button className="primary-button full-width" onClick={submit} disabled={loading}>
-          {loading ? "处理中..." : mode === "login" ? "登录" : "注册并开始访谈"}
+          {loading ? "处理中..." : mode === "login" ? "登录" : "验证注册并开始访谈"}
         </button>
       </section>
     </div>
@@ -1475,6 +1514,9 @@ function PathsView({
   const [pathError, setPathError] = useState("");
   const selected = paths.find((path) => path.key === selectedPathKey) || paths[0] || null;
   const selectedScore = selected ? reportScoreForPath(report, selected.name) ?? selected.match : 0;
+  const reportScoreRows = pathScoreRows(report, paths);
+  const scoreRadarRows = reportScoreRows.map((item) => ({ path: item.name, score: item.score }));
+  const selectedReportScore = selected ? reportScoreRows.find((item) => item.name === selected.name) : null;
 
   useEffect(() => {
     publicApi.paths()
@@ -1564,6 +1606,44 @@ function PathsView({
           </div>
         </div>
         <aside className="path-side-stack">
+          <div className="surface path-report-panel">
+            <SectionTitle icon={Sparkles} title="AI 报告推荐评分" />
+            <div className="chart-box compact path-score-radar">
+              {scoreRadarRows.length > 0 ? (
+                <ResponsiveContainer width="100%" height={220}>
+                  <RadarChart data={scoreRadarRows}>
+                    <PolarGrid />
+                    <PolarAngleAxis dataKey="path" />
+                    <Radar name={report ? "报告评分" : "基础匹配"} dataKey="score" stroke="#172033" fill="#172033" fillOpacity={0.16} />
+                    <Tooltip />
+                  </RadarChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="empty-state">生成 AI 报告后会显示动态推荐评分。</div>
+              )}
+            </div>
+            <div className="score-list compact-score-list">
+              {reportScoreRows.map((item) => (
+                <div className={item.name === selected.name ? "score-row selected-score-row" : "score-row"} key={item.name}>
+                  <div>
+                    <strong>{item.name}</strong>
+                    <span>{item.rank}</span>
+                  </div>
+                  <div className="score-track">
+                    <span style={{ width: `${item.score}%`, background: item.color }} />
+                  </div>
+                  <b>{item.score}</b>
+                </div>
+              ))}
+            </div>
+            {selectedReportScore?.reasons.length ? (
+              <div className="path-score-reasons">
+                {selectedReportScore.reasons.slice(0, 3).map((reason) => <span key={reason}>{reason}</span>)}
+              </div>
+            ) : (
+              <p className="helper-text">完成 AI 访谈后，这里会随报告内容变化。</p>
+            )}
+          </div>
           <div className="surface">
             <SectionTitle icon={BarChart3} title="相关图表" />
             <div className="queue-list">
@@ -1732,7 +1812,7 @@ function ChartsView({
       const data = rows.map((row) => ({
         name: String(row[nameKey] || row.name || "未命名"),
         value: Number(row[valueKey] || row.value || 0),
-        color: pathColor(String(row[nameKey] || row.name || ""))
+        color: typeof row.color === "string" ? row.color : pathColor(String(row[nameKey] || row.name || ""))
       }));
       return (
         <PieChart>
@@ -2368,7 +2448,7 @@ function AdminView() {
   const [adminNotice, setAdminNotice] = useState("");
   const [adminBusy, setAdminBusy] = useState("");
   const [adminTab, setAdminTab] = useState<"overview" | "users" | "contents" | "review" | "sources" | "paths" | "charts" | "tags" | "ai">("overview");
-  const [sourceForm, setSourceForm] = useState({ id: undefined as number | undefined, name: "", url: "", type: "公开权威数据", path: "就业", frequency: "每日", trustLevel: "中", status: "启用" });
+  const [sourceForm, setSourceForm] = useState({ id: undefined as number | undefined, name: "", url: "", type: "公开权威数据", path: "就业", frequency: "每日", trustLevel: "中", status: "启用", fallbackUrlsText: "" });
   const [contentForm, setContentForm] = useState({ id: undefined as number | undefined, title: "首页公告", category: "公告", summary: "请完成 AI 访谈并生成报告。", body: "请完成 AI 访谈并生成报告。", sourceName: "后台维护", sourceUrl: "", tags: "公告", displayPosition: "首页", sortOrder: 1, status: "已发布" });
   const [tagForm, setTagForm] = useState({ id: undefined as number | undefined, name: "校招", type: "内容标签", status: "启用", sortOrder: 9 });
   const [chartForm, setChartForm] = useState<ChartForm>(emptyChartForm);
@@ -2511,7 +2591,10 @@ function AdminView() {
   async function saveSource() {
     if (!admin) return;
     await runAdminAction("save-source", async () => {
-      await adminApi.saveSource(admin.token, sourceForm);
+      await adminApi.saveSource(admin.token, {
+        ...sourceForm,
+        parserRule: { fallbackUrls: splitLines(sourceForm.fallbackUrlsText) }
+      });
       return sourceForm.id ? "数据源已更新" : "数据源已保存";
     });
   }
@@ -2551,13 +2634,16 @@ function AdminView() {
       path: source.path,
       frequency: source.frequency,
       trustLevel: source.trustLevel || "中",
-      status: source.status
+      status: source.status,
+      fallbackUrlsText: Array.isArray(source.parserRule?.fallbackUrls)
+        ? source.parserRule.fallbackUrls.map((item) => String(item)).join("\n")
+        : ""
     });
     setAdminTab("sources");
   }
 
   function newSource() {
-    setSourceForm({ id: undefined, name: "", url: "", type: "公开权威数据", path: "就业", frequency: "每日", trustLevel: "中", status: "启用" });
+    setSourceForm({ id: undefined, name: "", url: "", type: "公开权威数据", path: "就业", frequency: "每日", trustLevel: "中", status: "启用", fallbackUrlsText: "" });
   }
 
   function editContent(content: ContentItem) {
@@ -3044,6 +3130,15 @@ function AdminView() {
             <div className="form-grid compact-form">
               <label><span>来源名称</span><input value={sourceForm.name} onChange={(event) => setSourceForm({ ...sourceForm, name: event.target.value })} /></label>
               <label><span>来源地址</span><input value={sourceForm.url} onChange={(event) => setSourceForm({ ...sourceForm, url: event.target.value })} /></label>
+              <label className="full-span">
+                <span>备用来源地址</span>
+                <textarea
+                  className="compact-textarea"
+                  value={sourceForm.fallbackUrlsText}
+                  placeholder="遇到 403/429 时按行依次尝试备用公开入口"
+                  onChange={(event) => setSourceForm({ ...sourceForm, fallbackUrlsText: event.target.value })}
+                />
+              </label>
               <label>
                 <span>来源类型</span>
                 <select value={sourceForm.type} onChange={(event) => setSourceForm({ ...sourceForm, type: event.target.value })}>
@@ -4095,6 +4190,28 @@ function PostEditor({
 function StatusPill({ status }: { status: string }) {
   const kind = status.includes("通过") || status === "启用" || status === "正常" ? "ok" : status.includes("待") || status.includes("处理") ? "warn" : "muted";
   return <span className={`status-pill ${kind}`}>{status}</span>;
+}
+
+function pathScoreRows(report: AiReport | null, paths: PathInfo[]) {
+  const rankLabels = ["第一推荐", "第二推荐", "第三推荐"];
+  if (report?.scores?.length) {
+    return report.scores.map((score, index) => ({
+      name: score.path,
+      score: score.score,
+      rank: score.rank || rankLabels[index] || "备选路径",
+      color: pathColor(score.path),
+      reasons: score.reasons || []
+    }));
+  }
+  return [...paths]
+    .sort((left, right) => right.match - left.match)
+    .map((path, index) => ({
+      name: path.name,
+      score: path.match,
+      rank: rankLabels[index] || "基础匹配",
+      color: path.accent || pathColor(path.name),
+      reasons: path.suitable || []
+    }));
 }
 
 function reportDimensionRows(report: AiReport | null) {

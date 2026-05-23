@@ -9,6 +9,20 @@ spring:
     username: ${SPRING_DATASOURCE_USERNAME:career_compass}
     password: ${SPRING_DATASOURCE_PASSWORD:career_compass_pwd}
     driver-class-name: com.mysql.cj.jdbc.Driver
+  mail:
+    host: ${QQ_MAIL_HOST:smtp.qq.com}
+    port: ${QQ_MAIL_PORT:465}
+    username: ${QQ_MAIL_USERNAME:}
+    password: ${QQ_MAIL_SMTP_AUTH_CODE:}
+    protocol: smtp
+    default-encoding: UTF-8
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.ssl.enable: true
+      mail.smtp.ssl.trust: ${QQ_MAIL_HOST:smtp.qq.com}
+      mail.smtp.connectiontimeout: 10000
+      mail.smtp.timeout: 10000
+      mail.smtp.writetimeout: 10000
 
 management:
   endpoints:
@@ -20,6 +34,12 @@ app:
   admin-token: ${ADMIN_TOKEN:change-me-admin-token}
   jwt-secret: ${JWT_SECRET:career-compass-local-secret-change-me}
   student-email-pattern: '${STUDENT_EMAIL_PATTERN:^\d{10}@st\.usst\.edu\.cn$}'
+  mail:
+    verification-enabled: ${MAIL_VERIFICATION_ENABLED:true}
+    code-ttl-minutes: ${MAIL_CODE_TTL_MINUTES:10}
+    code-cooldown-seconds: ${MAIL_CODE_COOLDOWN_SECONDS:60}
+    code-max-sends-per-window: ${MAIL_CODE_MAX_SENDS_PER_WINDOW:3}
+    code-max-attempts: ${MAIL_CODE_MAX_ATTEMPTS:5}
   auto-crawl:
     enabled: ${AUTO_CRAWL_ENABLED:true}
     initial-delay-minutes: ${AUTO_CRAWL_INITIAL_DELAY_MINUTES:5}

@@ -26,6 +26,12 @@ export type Session = {
   profile: StudentProfile;
 };
 
+export type EmailCodeResult = {
+  email: string;
+  expiresInSeconds: number;
+  cooldownSeconds: number;
+};
+
 export type AdminSession = {
   token: string;
   role: string;
@@ -206,6 +212,7 @@ export type CrawlSource = {
   lastTaskStatus?: string;
   lastTaskMessage?: string;
   lastTaskAt?: string;
+  parserRule?: Record<string, unknown>;
 };
 
 export type StudentAdminItem = {
@@ -313,7 +320,9 @@ export async function api<T>(path: string, options: RequestInit = {}, token?: st
 }
 
 export const authApi = {
-  register: (profile: Partial<StudentProfile> & { email: string; password: string }) =>
+  sendRegisterCode: (email: string) =>
+    api<EmailCodeResult>("/api/auth/register-code", { method: "POST", body: JSON.stringify({ email }) }),
+  register: (profile: Partial<StudentProfile> & { email: string; password: string; verificationCode?: string }) =>
     api<Session>("/api/auth/register", { method: "POST", body: JSON.stringify(profile) }),
   login: (email: string, password: string) =>
     api<Session>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),

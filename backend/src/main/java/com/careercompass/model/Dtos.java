@@ -20,6 +20,7 @@ public final class Dtos {
   public record AuthRequest(
       String email,
       String password,
+      String verificationCode,
       String name,
       String studentNo,
       String college,
@@ -28,6 +29,10 @@ public final class Dtos {
       String phone,
       String nickname
   ) {}
+
+  public record EmailCodeRequest(String email) {}
+
+  public record EmailCodeResult(String email, int expiresInSeconds, int cooldownSeconds) {}
 
   public record CancelAccountRequest(String reason, Boolean confirmed) {}
 
@@ -312,7 +317,8 @@ public final class Dtos {
       String updatedAt,
       String lastTaskStatus,
       String lastTaskMessage,
-      String lastTaskAt
+      String lastTaskAt,
+      Map<String, Object> parserRule
   ) {}
 
   public record CrawlSourceSaveRequest(
