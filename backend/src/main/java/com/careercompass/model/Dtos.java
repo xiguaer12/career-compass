@@ -172,6 +172,14 @@ public final class Dtos {
 
   public record TemplateResource(long id, String name, String path, String format, String url, String updatedAt) {}
 
+  public record TemplateDownload(
+      long templateId,
+      String name,
+      String url,
+      String format,
+      String loggedAt
+  ) {}
+
   public record TrendPoint(String year, double civilExam, double postgraduate, double employment) {}
 
   public record ChartBundle(
@@ -246,6 +254,12 @@ public final class Dtos {
       String answerText
   ) {}
 
+  public record AiChatHistoryItem(long id, long reportId, String question, AiAnswer answer, String createdAt) {}
+
+  public record FavoriteRequest(String itemType, String itemId, String title, String url) {}
+
+  public record FavoriteItem(long id, String itemType, String itemId, String title, String url, String createdAt) {}
+
   public record CommunityPost(
       long id,
       String title,
@@ -273,6 +287,7 @@ public final class Dtos {
   public record CommunityComment(
       long id,
       long postId,
+      Long parentCommentId,
       String body,
       String authorDisplay,
       boolean bestAnswer,
@@ -286,7 +301,18 @@ public final class Dtos {
 
   public record AdminStatusRequest(long id, String status, String reason) {}
 
-  public record CommunityUser(String name, String studentNo, int posts, int reports, String status) {}
+  public record CommunityUser(
+      long id,
+      String name,
+      String studentNo,
+      int posts,
+      int comments,
+      int reports,
+      String status,
+      String punishmentReason,
+      String mutedUntil,
+      String bannedUntil
+  ) {}
 
   public record StudentAdminItem(
       long id,

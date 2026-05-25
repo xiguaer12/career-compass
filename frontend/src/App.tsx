@@ -37,7 +37,7 @@ import {
   UserRound,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -59,6 +59,7 @@ import {
   XAxis,
   YAxis
 } from "recharts";
+import * as XLSX from "xlsx";
 import {
   adminApi,
   api,
@@ -68,15 +69,18 @@ import {
   studentApi,
   type AdminSession,
   type AiAnswer,
+  type AiChatHistoryItem,
   type AiConfigItem,
   type AbuseReportItem,
   type ChartItem,
+  type CommunityUserAdminItem,
   type CommunityComment,
   type ContentItem,
   type CrawlCandidateItem,
   type AiReport,
   type CrawlSource,
   type Dashboard,
+  type FavoriteItem,
   type InterviewMessage,
   type MessageItem,
   type PathConfigItem,
@@ -317,6 +321,39 @@ function parseJsonRecord(text: string, label: string) {
   }
 }
 
+function parseCsvRows(text: string) {
+  const rows: string[][] = [];
+  let current = "";
+  let row: string[] = [];
+  let quoted = false;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (char === '"' && quoted && next === '"') {
+      current += '"';
+      index++;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      row.push(current);
+      current = "";
+    } else if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && next === "\n") index++;
+      row.push(current);
+      rows.push(row);
+      row = [];
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (current || row.length) {
+    row.push(current);
+    rows.push(row);
+  }
+  return rows;
+}
+
 const navItems: Array<{ key: TabKey; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { key: "home", label: "首页", icon: LayoutDashboard },
   { key: "workspace", label: "工作台", icon: ClipboardList },
@@ -476,6 +513,7 @@ function App() {
           <PathsView
             report={report}
             session={session}
+            onLogin={() => setAuthOpen(true)}
             selectedPathKey={selectedPathKey}
             onSelectedPathKeyChange={setSelectedPathKey}
             onOpenChart={(chart) => {
@@ -1198,7 +1236,7 @@ function WorkspaceView({
                 </div>
               </div>
             ))}
-            {!workbench?.timeline.length && <ResourceTable />}
+            {!workbench?.timeline.length && <ResourceTable session={session} onLogin={onLogin} />}
           </div>
         </div>
       </section>
@@ -1258,32 +1296,110 @@ function ReportView({
 }) {
   const [chatQuestion, setChatQuestion] = useState("");
   const [chatAnswers, setChatAnswers] = useState<Array<{ question: string; answer: AiAnswer }>>([]);
+  const [reportThreads, setReportThreads] = useState<Array<{ id: number; reportVersion: string; generatedAt: string; topPath: string; topScore: number }>>([]);
+  const [activeReport, setActiveReport] = useState<AiReport | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
+  const [threadLoadingId, setThreadLoadingId] = useState<number | null>(null);
   const [taskBusy, setTaskBusy] = useState(false);
   const [taskMessage, setTaskMessage] = useState("");
-  const scoreRows = (report?.scores ?? []).map((score) => ({ name: score.path, score: score.score, rank: score.rank, color: pathColor(score.path), reasons: score.reasons ?? [] }));
-  const dimensionRows = reportDimensionRows(report);
-  const planRows = report?.plan ?? [];
-  const riskRows = report?.risks ?? [];
-  const alternativeRows = report?.alternatives ?? [];
-  const narrativeReport = report?.narrativeReport?.trim();
-  const studentProfile = report?.studentProfile?.trim();
+  const reportExportRef = useRef<HTMLDivElement | null>(null);
+  const currentReport = activeReport ?? report;
+  const scoreRows = (currentReport?.scores ?? []).map((score) => ({ name: score.path, score: score.score, rank: score.rank, color: pathColor(score.path), reasons: score.reasons ?? [] }));
+  const dimensionRows = reportDimensionRows(currentReport);
+  const planRows = currentReport?.plan ?? [];
+  const riskRows = currentReport?.risks ?? [];
+  const alternativeRows = currentReport?.alternatives ?? [];
+  const narrativeReport = currentReport?.narrativeReport?.trim();
+  const studentProfile = currentReport?.studentProfile?.trim();
   const hasStructuredReport = scoreRows.length > 0 || dimensionRows.length > 0 || planRows.length > 0 || riskRows.length > 0 || alternativeRows.length > 0;
+
+  useEffect(() => {
+    if (!session) {
+      setReportThreads([]);
+      setActiveReport(null);
+      return;
+    }
+    studentApi.reportHistory(session.token).then(setReportThreads).catch(() => undefined);
+  }, [session?.token, report?.id]);
+
+  useEffect(() => {
+    if (!session || !currentReport) {
+      setChatAnswers([]);
+      return;
+    }
+    studentApi.chatHistory(session.token, currentReport.id)
+      .then((history: AiChatHistoryItem[]) => setChatAnswers(history.map((item) => ({ question: item.question, answer: item.answer }))))
+      .catch(() => undefined);
+  }, [session?.token, currentReport?.id]);
+
+  async function openReportThread(reportId: number) {
+    if (!session) {
+      onLogin();
+      return;
+    }
+    setThreadLoadingId(reportId);
+    try {
+      const next = await studentApi.reportTask(session.token, reportId);
+      if (next.report) {
+        setActiveReport(next.report);
+        onTask(next);
+      }
+    } finally {
+      setThreadLoadingId(null);
+    }
+  }
 
   async function askReport() {
     if (!session) {
       onLogin();
       return;
     }
-    if (!report || !chatQuestion.trim()) return;
+    if (!currentReport || !chatQuestion.trim()) return;
     setChatLoading(true);
     try {
-      const answer = await studentApi.chat(session.token, report.id, chatQuestion);
+      const answer = await studentApi.chat(session.token, currentReport.id, chatQuestion, chatAnswers.map((item) => ({ role: "user", content: item.question })));
       setChatAnswers([...chatAnswers, { question: chatQuestion, answer }]);
       setChatQuestion("");
     } finally {
       setChatLoading(false);
     }
+  }
+
+  function exportPdf() {
+    window.print();
+  }
+
+  async function exportLongImage() {
+    const node = reportExportRef.current;
+    if (!node) return;
+    const rect = node.getBoundingClientRect();
+    const width = Math.ceil(rect.width);
+    const height = Math.ceil(node.scrollHeight);
+    const clone = node.cloneNode(true) as HTMLElement;
+    clone.style.width = `${width}px`;
+    clone.style.background = "#ffffff";
+    clone.style.padding = "24px";
+    const xhtml = new XMLSerializer().serializeToString(clone);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width + 48}" height="${height + 48}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml">${xhtml}</div></foreignObject></svg>`;
+    const image = new Image();
+    const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("长图生成失败"));
+      image.src = url;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = width + 48;
+    canvas.height = height + 48;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0);
+    const link = document.createElement("a");
+    link.href = canvas.toDataURL("image/png");
+    link.download = `career-compass-report-${currentReport?.id || "latest"}.png`;
+    link.click();
   }
 
   async function refreshTask() {
@@ -1333,8 +1449,20 @@ function ReportView({
     <div className="page-stack">
       <section className="disclaimer">
         <AlertTriangle size={18} />
-        <span>{report?.disclaimer || "AI 报告仅供辅助决策，不替代学生最终选择。报告会基于你完成的 AI 访谈生成。"}</span>
+        <span>{currentReport?.disclaimer || "AI 报告仅供辅助决策，不替代学生最终选择。报告会基于你完成的 AI 访谈生成。"}</span>
         {!session && <button className="secondary-button" onClick={onLogin}>登录生成真实报告</button>}
+        {currentReport && (
+          <div className="button-row compact-actions report-actions">
+            <button className="secondary-button" onClick={exportPdf}>
+              <FileText size={16} />
+              导出 PDF
+            </button>
+            <button className="secondary-button" onClick={exportLongImage}>
+              <Download size={16} />
+              导出长图
+            </button>
+          </div>
+        )}
       </section>
       {session && task && task.status !== "已完成" && (
         <section className="surface">
@@ -1359,14 +1487,36 @@ function ReportView({
           </div>
         </section>
       )}
-      {!report && (
+      {!currentReport && (
         <section className="surface">
           <SectionTitle icon={Sparkles} title="暂无 AI 报告" />
           <div className="empty-state">当前账号还没有已完成的 AI 报告。完成工作台里的 AI 访谈并生成报告后，这里会显示完整报告正文和报告追问。</div>
         </section>
       )}
-      {report && (
-        <>
+      {currentReport && (
+        <section className="report-thread-layout">
+          <aside className="report-thread-sidebar">
+            <div className="thread-sidebar-head">
+              <strong>报告线程</strong>
+              <span>{reportThreads.length} 份历史报告</span>
+            </div>
+            <div className="thread-list">
+              {reportThreads.map((thread) => (
+                <button
+                  key={thread.id}
+                  className={currentReport.id === thread.id ? "thread-item active" : "thread-item"}
+                  onClick={() => openReportThread(thread.id)}
+                  disabled={threadLoadingId === thread.id}
+                >
+                  <span>{thread.topPath || "AI 报告"}{thread.topScore > 0 ? ` · ${thread.topScore}` : ""}</span>
+                  <small>{thread.reportVersion} · {formatAdminTime(thread.generatedAt)}</small>
+                </button>
+              ))}
+              {reportThreads.length === 0 && <div className="empty-state compact-empty">暂无历史线程</div>}
+            </div>
+          </aside>
+          <div className="report-thread-main">
+        <div ref={reportExportRef} className="report-export-area report-thread-message">
       {(narrativeReport || studentProfile) && (
         <section className="surface report-narrative">
           <SectionTitle icon={FileText} title="综合报告正文" />
@@ -1457,6 +1607,7 @@ function ReportView({
       </section>
         </>
       )}
+        </div>
       <section className="surface ai-chat">
         <SectionTitle icon={Bot} title="报告追问" />
         <div className="chat-history">
@@ -1480,13 +1631,14 @@ function ReportView({
         </div>
         <div className="chat-input">
           <input value={chatQuestion} onChange={(event) => setChatQuestion(event.target.value)} placeholder="围绕当前报告继续追问" />
-          <button className="primary-button" title="发送" onClick={askReport} disabled={chatLoading || !report}>
+          <button className="primary-button" title="发送" onClick={askReport} disabled={chatLoading || !currentReport}>
             <Send size={17} />
             {chatLoading ? "发送中" : "发送"}
           </button>
         </div>
       </section>
-        </>
+          </div>
+        </section>
       )}
     </div>
   );
@@ -1495,6 +1647,7 @@ function ReportView({
 function PathsView({
   report,
   session,
+  onLogin,
   selectedPathKey,
   onSelectedPathKeyChange,
   onOpenChart,
@@ -1502,6 +1655,7 @@ function PathsView({
 }: {
   report: AiReport | null;
   session: Session | null;
+  onLogin: () => void;
   selectedPathKey: string;
   onSelectedPathKeyChange: (key: string) => void;
   onOpenChart: (chart: ChartItem) => void;
@@ -1511,6 +1665,8 @@ function PathsView({
   const [pathPage, setPathPage] = useState<PathPage | null>(null);
   const [pathCharts, setPathCharts] = useState<ChartItem[]>([]);
   const [pathPosts, setPathPosts] = useState<CommunityPost[]>([]);
+  const [contentFavoriteIds, setContentFavoriteIds] = useState<Set<string>>(new Set());
+  const [pathSection, setPathSection] = useState<"overview" | "info" | "plan" | "templates" | "experience">("overview");
   const [pathError, setPathError] = useState("");
   const selected = paths.find((path) => path.key === selectedPathKey) || paths[0] || null;
   const selectedScore = selected ? reportScoreForPath(report, selected.name) ?? selected.match : 0;
@@ -1541,6 +1697,30 @@ function PathsView({
       studentApi.recordActivity(session.token, "path", selected.key, `${selected.name}路径页`, `/paths/${selected.key}`).catch(() => undefined);
     }
   }, [selected?.key, selected?.name, session?.token]);
+
+  useEffect(() => {
+    if (!session?.token) {
+      setContentFavoriteIds(new Set());
+      return;
+    }
+    studentApi.favorites(session.token)
+      .then((items) => setContentFavoriteIds(new Set(items.filter((item) => item.itemType === "content").map((item) => item.itemId))))
+      .catch(() => undefined);
+  }, [session?.token]);
+
+  async function toggleContentFavorite(item: ContentItem) {
+    if (!session?.token) {
+      onLogin();
+      return;
+    }
+    const result = await studentApi.toggleFavorite(session.token, "content", String(item.id), item.title, item.sourceUrl || `/paths/${selected?.key || ""}`);
+    setContentFavoriteIds((current) => {
+      const next = new Set(current);
+      if (result.active) next.add(String(item.id));
+      else next.delete(String(item.id));
+      return next;
+    });
+  }
 
   if (!selected) {
     return (
@@ -1580,10 +1760,31 @@ function PathsView({
           </div>
         </div>
       </section>
+      <section className="segmented path-subtabs" aria-label="路径子页面">
+        {[
+          ["overview", "首页"],
+          ["info", selected.name === "考研" ? "院校专业" : selected.name === "考公" ? "招考信息" : "行业岗位"],
+          ["plan", selected.name === "考研" ? "择校复习" : selected.name === "考公" ? "岗位备考" : "求职准备"],
+          ["templates", "资料下载"],
+          ["experience", "经验交流"]
+        ].map(([key, label]) => (
+          <button key={key} className={pathSection === key ? "active" : ""} onClick={() => setPathSection(key as typeof pathSection)}>{label}</button>
+        ))}
+      </section>
+      {(pathSection === "overview" || pathSection === "plan") && (
+        <section className="content-grid three path-overview-grid">
+          <InfoList title="适合人群" items={pathPage?.suitable || selected.suitable} />
+          <InfoList title="流程概览" items={pathPage?.timeline || selected.timeline} />
+          <InfoList title="常见风险" items={pathPage?.pitfalls || selected.pitfalls} />
+        </section>
+      )}
+      {pathSection === "templates" && (
       <section className="surface path-template-spotlight">
         <SectionTitle icon={Download} title={`${selected.name}路线资料模板`} />
-        <ResourceTable filter={selected.name} />
+        <ResourceTable filter={selected.name} session={session} onLogin={onLogin} />
       </section>
+      )}
+      {(pathSection === "overview" || pathSection === "info") && (
       <section className="content-grid path-news-layout">
         <div className="surface path-news-main">
           <SectionTitle icon={FileText} title={`${selected.name}最新审核资讯`} />
@@ -1596,8 +1797,18 @@ function PathsView({
                   <p>{item.summary}</p>
                 </div>
                 {item.sourceUrl && (
-                  <button className="icon-button" title="查看来源" onClick={() => window.open(item.sourceUrl, "_blank", "noopener,noreferrer")}>
-                    <ExternalLink size={16} />
+                  <div className="button-row compact-actions">
+                    <button className="icon-button" title={contentFavoriteIds.has(String(item.id)) ? "已收藏" : "收藏资讯"} onClick={() => toggleContentFavorite(item)}>
+                      <Star size={16} fill={contentFavoriteIds.has(String(item.id)) ? "currentColor" : "none"} />
+                    </button>
+                    <button className="icon-button" title="查看来源" onClick={() => window.open(item.sourceUrl, "_blank", "noopener,noreferrer")}>
+                      <ExternalLink size={16} />
+                    </button>
+                  </div>
+                )}
+                {!item.sourceUrl && (
+                  <button className="icon-button" title={contentFavoriteIds.has(String(item.id)) ? "已收藏" : "收藏资讯"} onClick={() => toggleContentFavorite(item)}>
+                    <Star size={16} fill={contentFavoriteIds.has(String(item.id)) ? "currentColor" : "none"} />
                   </button>
                 )}
               </div>
@@ -1675,6 +1886,13 @@ function PathsView({
           </div>
         </aside>
       </section>
+      )}
+      {pathSection === "experience" && (
+        <section className="surface">
+          <SectionTitle icon={MessagesSquare} title={`${selected.name}经验交流`} />
+          <PostList posts={pathPosts} onOpen={onOpenCommunityPost} showActions={false} clickable />
+        </section>
+      )}
     </div>
   );
 }
@@ -1997,6 +2215,7 @@ function CommunityView({
   const [selectedPost, setSelectedPost] = useState<CommunityPost | null>(null);
   const [comments, setComments] = useState<CommunityComment[]>([]);
   const [commentBody, setCommentBody] = useState("");
+  const [replyToComment, setReplyToComment] = useState<CommunityComment | null>(null);
   const [ownPosts, setOwnPosts] = useState<CommunityPost[]>([]);
   const [editingPostId, setEditingPostId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState<PostDraft>(emptyPostDraft);
@@ -2114,6 +2333,7 @@ function CommunityView({
     setSelectedPost(null);
     setComments([]);
     setCommentBody("");
+    setReplyToComment(null);
     cancelEdit();
   }
 
@@ -2201,8 +2421,9 @@ function CommunityView({
       return;
     }
     if (!selectedPost || !commentBody.trim()) return;
-    await communityApi.comment(session.token, selectedPost.id, commentBody);
+    await communityApi.comment(session.token, selectedPost.id, commentBody, replyToComment?.id);
     setCommentBody("");
+    setReplyToComment(null);
     setComments(await communityApi.comments(selectedPost.id));
     setNotice("回复已发布");
   }
@@ -2400,6 +2621,12 @@ function CommunityView({
             />
           )}
           <div className="comment-box">
+            {replyToComment && (
+              <span className="reply-target">
+                回复 {replyToComment.authorDisplay}
+                <button className="text-button" onClick={() => setReplyToComment(null)}>取消</button>
+              </span>
+            )}
             <input value={commentBody} onChange={(event) => setCommentBody(event.target.value)} placeholder="写下回复，问答作者可设置最佳回答" />
             <button className="primary-button" onClick={addComment}>回复</button>
           </div>
@@ -2408,13 +2635,16 @@ function CommunityView({
               <div className="queue-item" key={comment.id}>
                 <div>
                   <strong>{comment.authorDisplay}{comment.bestAnswer ? " · 最佳回答" : ""}</strong>
-                  <span>{comment.body}</span>
+                  <span>{comment.parentCommentId ? `回复 #${comment.parentCommentId}：` : ""}{comment.body}</span>
                 </div>
-                {selectedPost.type === "问答" && (
-                  <button className="secondary-button" onClick={() => bestAnswer(comment.id, !comment.bestAnswer)}>
-                    {comment.bestAnswer ? "取消最佳" : "设为最佳"}
-                  </button>
-                )}
+                <div className="button-row compact-actions">
+                  <button className="secondary-button" onClick={() => setReplyToComment(comment)}>回复</button>
+                  {selectedPost.type === "问答" && (
+                    <button className="secondary-button" onClick={() => bestAnswer(comment.id, !comment.bestAnswer)}>
+                      {comment.bestAnswer ? "取消最佳" : "设为最佳"}
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
             {comments.length === 0 && <div className="empty-state">暂无回复</div>}
@@ -2436,6 +2666,8 @@ function AdminView() {
   const [tags, setTags] = useState<TagItem[]>([]);
   const [aiConfigs, setAiConfigs] = useState<AiConfigItem[]>([]);
   const [reports, setReports] = useState<AbuseReportItem[]>([]);
+  const [reviewComments, setReviewComments] = useState<CommunityComment[]>([]);
+  const [communityUsers, setCommunityUsers] = useState<CommunityUserAdminItem[]>([]);
   const [admin, setAdmin] = useState<AdminSession | null>(() => {
     const token = localStorage.getItem("career-compass-admin-token");
     return token ? { token, role: "admin", displayName: "系统管理员" } : null;
@@ -2464,23 +2696,26 @@ function AdminView() {
 
   async function refreshAdmin(token = admin?.token) {
     if (!token) return;
-    const [nextDashboard, nextSources, nextPosts, nextStudents, nextContents, nextCandidates, nextCharts, nextPaths, nextTags, nextAiConfigs, nextReports] = await Promise.all([
+    const [nextDashboard, nextSources, nextPosts, nextStudents, nextCommunityUsers, nextContents, nextCandidates, nextCharts, nextPaths, nextTags, nextAiConfigs, nextReports, nextComments] = await Promise.all([
       adminApi.dashboard(token),
       adminApi.sources(token),
       adminApi.posts(token),
       adminApi.students(token),
+      adminApi.communityUsers(token),
       adminApi.contents(token),
       adminApi.candidates(token),
       adminApi.charts(token),
       adminApi.paths(token),
       adminApi.tags(token),
       adminApi.aiConfigs(token),
-      adminApi.reports(token, "待处理")
+      adminApi.reports(token, "待处理"),
+      adminApi.comments(token)
     ]);
     setDashboard(nextDashboard);
     setSources(nextSources);
     setPosts(nextPosts);
     setStudents(nextStudents);
+    setCommunityUsers(nextCommunityUsers);
     setContents(nextContents);
     setCandidates(nextCandidates);
     setCharts(nextCharts);
@@ -2488,6 +2723,7 @@ function AdminView() {
     setTags(nextTags);
     setAiConfigs(nextAiConfigs);
     setReports(nextReports);
+    setReviewComments(nextComments);
   }
 
   function clearAdminData() {
@@ -2495,6 +2731,7 @@ function AdminView() {
     setSources([]);
     setPosts([]);
     setStudents([]);
+    setCommunityUsers([]);
     setContents([]);
     setCandidates([]);
     setCharts([]);
@@ -2502,6 +2739,7 @@ function AdminView() {
     setTags([]);
     setAiConfigs([]);
     setReports([]);
+    setReviewComments([]);
   }
 
   function isAdminAuthError(exception: unknown) {
@@ -2607,6 +2845,15 @@ function AdminView() {
     });
   }
 
+  async function deleteContent(id: number) {
+    if (!admin) return;
+    if (!window.confirm("确认删除这条内容？删除后前台不再展示。")) return;
+    await runAdminAction(`delete-content-${id}`, async () => {
+      await adminApi.deleteContent(admin.token, id);
+      return "内容已删除";
+    });
+  }
+
   async function reviewCandidate(id: number, action: string, candidate?: CrawlCandidateItem) {
     if (!admin) return;
     if (action === "驳回" && !window.confirm("确认驳回这条抓取资讯？如果它已经发布，前台对应资讯也会同步下架。")) return;
@@ -2667,6 +2914,10 @@ function AdminView() {
     setContentForm({ id: undefined, title: "", category: "公告", summary: "", body: "", sourceName: "后台维护", sourceUrl: "", tags: "", displayPosition: "首页", sortOrder: 1, status: "待审核" });
   }
 
+  function appendContentMarkup(prefix: string, suffix = "") {
+    setContentForm((current) => ({ ...current, body: `${current.body}${current.body ? "\n" : ""}${prefix}${suffix}` }));
+  }
+
   async function updateUser(id: number, status: string) {
     if (!admin) return;
     if (!window.confirm(`确认将用户状态改为 ${status}？`)) return;
@@ -2674,6 +2925,74 @@ function AdminView() {
       await adminApi.updateStudentStatus(admin.token, id, status, "后台用户管理操作");
       return "用户状态已更新";
     });
+  }
+
+  async function punishCommunityUser(id: number, status: string) {
+    if (!admin) return;
+    const reason = window.prompt(`请输入${status}原因`, "社区违规处理") || "社区违规处理";
+    await runAdminAction(`community-user-${id}-${status}`, async () => {
+      await adminApi.updateStudentStatus(admin.token, id, status, reason);
+      return "社区用户处罚状态已更新";
+    });
+  }
+
+  async function updateComment(id: number, status: string) {
+    if (!admin) return;
+    await runAdminAction(`comment-${id}-${status}`, async () => {
+      await adminApi.updateCommentStatus(admin.token, id, status, status === "已下架" ? "后台评论审核下架" : "后台评论审核");
+      return `评论已更新为：${status}`;
+    });
+  }
+
+  function applyImportedChartRows(rows: string[][]) {
+    if (rows.length === 0) {
+      setAdminError("导入文件没有可用数据行");
+      return;
+    }
+    const headers = rows[0].map((item) => item.trim()).filter(Boolean);
+    const dataRows = rows.slice(1).filter((row) => row.some((cell) => String(cell).trim()));
+    if (headers.length === 0 || dataRows.length === 0) {
+      setAdminError("导入文件至少需要表头和一行数据");
+      return;
+    }
+    const parsedRows = dataRows.map((row) => Object.fromEntries(headers.map((header, index) => {
+      const raw = String(row[index] ?? "");
+      const numeric = Number(raw);
+      return [header, raw.trim() !== "" && !Number.isNaN(numeric) ? numeric : raw];
+    })));
+    const valueKeys = headers.slice(1);
+    setChartForm((current) => ({
+      ...current,
+      dataText: JSON.stringify({
+        xKey: headers[0],
+        series: valueKeys.map((key, index) => ({ key, name: key, color: chartPalette[index % chartPalette.length] })),
+        rows: parsedRows
+      }, null, 2)
+    }));
+    setAdminNotice(`已解析 ${parsedRows.length} 行数据，可继续保存图表`);
+  }
+
+  function importChartFile(file: File | null) {
+    if (!file) return;
+    const lowerName = file.name.toLowerCase();
+    if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const workbook = XLSX.read(reader.result, { type: "array" });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json<Array<string | number>>(firstSheet, { header: 1, raw: false })
+          .map((row) => row.map((cell) => String(cell ?? "")));
+        applyImportedChartRows(rows);
+      };
+      reader.readAsArrayBuffer(file);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      applyImportedChartRows(parseCsvRows(text));
+    };
+    reader.readAsText(file, "utf-8");
   }
 
   async function saveTag() {
@@ -2800,6 +3119,11 @@ function AdminView() {
       student.major || "",
       student.status
     ].some((value) => value.toLowerCase().includes(keyword));
+  });
+  const visibleCommunityUsers = communityUsers.filter((user) => {
+    const keyword = studentKeyword.trim().toLowerCase();
+    return !keyword || [user.name, user.studentNo || "", user.status, user.punishmentReason || ""]
+      .some((value) => value.toLowerCase().includes(keyword));
   });
   const visibleReviewPosts = posts.filter((post) => postReviewStatus === "全部" || post.status === postReviewStatus);
 
@@ -2979,6 +3303,42 @@ function AdminView() {
               </tbody>
             </table>
           </div>
+          <div className="admin-subsection">
+            <SectionTitle icon={MessagesSquare} title="社区用户处罚" />
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>用户</th><th>社区数据</th><th>处罚状态</th><th>操作</th></tr>
+                </thead>
+                <tbody>
+                  {visibleCommunityUsers.map((user) => (
+                    <tr key={user.id}>
+                      <td>{user.name}<br /><small>{user.studentNo || "未绑定学号"}</small></td>
+                      <td>{user.posts} 帖 · {user.comments} 评 · {user.reports} 次举报</td>
+                      <td>
+                        <StatusPill status={user.status} />
+                        {(user.punishmentReason || user.mutedUntil || user.bannedUntil) && (
+                          <small>{user.punishmentReason || "处罚中"} {user.mutedUntil ? `禁言至 ${formatAdminTime(user.mutedUntil)}` : ""} {user.bannedUntil ? `封禁至 ${formatAdminTime(user.bannedUntil)}` : ""}</small>
+                        )}
+                      </td>
+                      <td>
+                        <div className="button-row compact-actions">
+                          <button className="secondary-button" onClick={() => punishCommunityUser(user.id, "禁言中")} disabled={adminWorking}>禁言</button>
+                          <button className="secondary-button danger-button" onClick={() => punishCommunityUser(user.id, "封禁中")} disabled={adminWorking}>封禁</button>
+                          <button className="secondary-button" onClick={() => punishCommunityUser(user.id, "已完成引导")} disabled={adminWorking}>解除</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {visibleCommunityUsers.length === 0 && (
+                    <tr>
+                      <td colSpan={4}>没有匹配的社区用户</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </section>
       )}
 
@@ -3017,6 +3377,11 @@ function AdminView() {
             </div>
             <label>
               <span>正文</span>
+              <div className="button-row compact-actions rich-toolbar">
+                <button type="button" className="icon-button" title="加粗" onClick={() => appendContentMarkup("**加粗文字**")}>B</button>
+                <button type="button" className="icon-button" title="列表" onClick={() => appendContentMarkup("- 列表项")}>L</button>
+                <button type="button" className="icon-button" title="链接" onClick={() => appendContentMarkup("[链接文字](https://)")}>@</button>
+              </div>
               <textarea value={contentForm.body} onChange={(event) => setContentForm({ ...contentForm, body: event.target.value })} />
             </label>
             <button className="primary-button" onClick={saveContent} disabled={adminWorking}>{busyLabel("save-content", "保存内容")}</button>
@@ -3038,6 +3403,7 @@ function AdminView() {
                   <div className="button-row compact-actions">
                     <StatusPill status={content.status} />
                     <button className="secondary-button" onClick={() => editContent(content)}>编辑</button>
+                    <button className="secondary-button danger-button" onClick={() => deleteContent(content.id)} disabled={adminWorking}>{busyLabel(`delete-content-${content.id}`, "删除")}</button>
                   </div>
                 </div>
               ))}
@@ -3118,6 +3484,23 @@ function AdminView() {
                 );
               })}
               {reports.length === 0 && <div className="empty-state">暂无待处理举报</div>}
+            </div>
+            <SectionTitle icon={MessagesSquare} title="评论审核" />
+            <div className="queue-list">
+              {reviewComments.slice(0, 20).map((comment) => (
+                <div className="queue-item" key={comment.id}>
+                  <div>
+                    <strong>{comment.authorDisplay} · 帖子 #{comment.postId}</strong>
+                    <span>{comment.body}</span>
+                    <small>{comment.status} · {formatAdminTime(comment.createdAt)}</small>
+                  </div>
+                  <div className="button-row compact-actions">
+                    <button className="secondary-button" onClick={() => updateComment(comment.id, "已通过")} disabled={adminWorking}>通过</button>
+                    <button className="secondary-button danger-button" onClick={() => updateComment(comment.id, "已下架")} disabled={adminWorking}>下架</button>
+                  </div>
+                </div>
+              ))}
+              {reviewComments.length === 0 && <div className="empty-state">暂无评论记录</div>}
             </div>
           </div>
         </section>
@@ -3374,6 +3757,13 @@ function AdminView() {
               <span>图表数据 JSON，需要包含 rows 数组</span>
               <textarea className="code-textarea" value={chartForm.dataText} onChange={(event) => setChartForm({ ...chartForm, dataText: event.target.value })} />
             </label>
+            <label className="file-import-line">
+              <span>导入 Excel/CSV</span>
+              <input type="file" accept=".xlsx,.xls,.csv,text/csv" onChange={(event) => {
+                importChartFile(event.target.files?.[0] || null);
+                event.target.value = "";
+              }} />
+            </label>
             <div className="helper-text">图表数据可声明 xKey、series、insights；趋势图/柱状图会按 series 动态渲染，时间线使用 stage/description。</div>
             <div className="button-row">
               <button className="primary-button" onClick={saveChart} disabled={adminWorking}>{busyLabel("save-chart", "保存图表")}</button>
@@ -3600,6 +3990,7 @@ function MeView({
   };
   const [history, setHistory] = useState<Array<{ id: number; reportVersion: string; generatedAt: string; topPath: string; topScore: number }>>([]);
   const [community, setCommunity] = useState<Record<string, CommunityPost[]>>({ posts: [], favorites: [] });
+  const [favoriteItems, setFavoriteItems] = useState<FavoriteItem[]>([]);
   const [editingPostId, setEditingPostId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState<PostDraft>(emptyPostDraft);
   const [editSaving, setEditSaving] = useState(false);
@@ -3620,6 +4011,7 @@ function MeView({
       nickname: session.profile.nickname === "Compass 用户" ? "" : session.profile.nickname || ""
     });
     studentApi.reportHistory(session.token).then(setHistory).catch(() => undefined);
+    studentApi.favorites(session.token).then(setFavoriteItems).catch(() => undefined);
     refreshCommunity(session.token).catch(() => undefined);
   }, [session?.token]);
 
@@ -3840,6 +4232,24 @@ function MeView({
         </div>
         <div className="surface">
           <SectionTitle icon={Star} title="我的收藏" />
+          <div className="queue-list favorite-resource-list">
+            {favoriteItems.map((item) => (
+              <div className="queue-item" key={`${item.itemType}-${item.itemId}`}>
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>{item.itemType === "report" ? "AI 报告" : "资讯内容"} · {formatAdminTime(item.createdAt)}</span>
+                </div>
+                {item.url && (
+                  <button className="icon-button" title="打开" onClick={() => {
+                    if (item.url?.startsWith("http")) window.open(item.url, "_blank", "noopener,noreferrer");
+                  }}>
+                    <ExternalLink size={16} />
+                  </button>
+                )}
+              </div>
+            ))}
+            {favoriteItems.length === 0 && (community.favorites || []).length === 0 && <div className="empty-state">暂无收藏</div>}
+          </div>
           <PostList posts={community.favorites || []} />
         </div>
       </section>
@@ -3913,7 +4323,7 @@ function InfoList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-function ResourceTable({ filter }: { filter?: string }) {
+function ResourceTable({ filter, session, onLogin }: { filter?: string; session?: Session | null; onLogin?: () => void }) {
   const [resources, setResources] = useState<TemplateResource[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -3926,6 +4336,26 @@ function ResourceTable({ filter }: { filter?: string }) {
       .catch(() => setFailed(true))
       .finally(() => setLoading(false));
   }, [filter]);
+
+  async function downloadResource(resource: TemplateResource) {
+    if (!session?.token) {
+      onLogin?.();
+      return;
+    }
+    if (!resource.url) return;
+    try {
+      if (resource.id) {
+        await studentApi.recordTemplateDownload(session.token, Number(resource.id));
+      }
+    } catch (exception) {
+      window.alert(exception instanceof Error ? exception.message : "该资源暂不可下载");
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = `${resource.url}?t=${Date.now()}`;
+    link.download = `${resource.name}.${resource.format.toLowerCase()}`;
+    link.click();
+  }
 
   const rows = resources;
   return (
@@ -3964,15 +4394,14 @@ function ResourceTable({ filter }: { filter?: string }) {
               <td>{resource.updatedAt}</td>
               <td>
                 {resource.url ? (
-                  <a
+                  <button
                     className="icon-button"
                     title={`下载${resource.name}`}
-                    href={`${resource.url}?t=${Date.now()}`}
-                    download={`${resource.name}.${resource.format.toLowerCase()}`}
+                    onClick={() => downloadResource(resource)}
                     aria-label={`下载${resource.name}`}
                   >
                     <Download size={16} />
-                  </a>
+                  </button>
                 ) : (
                   <button className="icon-button" title="暂无下载文件" disabled>
                     <Download size={16} />

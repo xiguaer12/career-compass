@@ -102,6 +102,14 @@ public class PublicApiController {
     return ApiResponse.ok(service.templates(category));
   }
 
+  @PostMapping("/templates/{id}/download")
+  public ApiResponse<TemplateDownload> downloadTemplate(
+      @RequestHeader("Authorization") String authorization,
+      @PathVariable long id
+  ) {
+    return ApiResponse.message("下载已记录", service.recordTemplateDownload(security.requireStudent(authorization), id));
+  }
+
   @GetMapping("/workbench")
   public ApiResponse<WorkbenchResponse> workbench(@RequestHeader("Authorization") String authorization) {
     return ApiResponse.ok(service.workbench(security.requireStudent(authorization)));
@@ -201,6 +209,27 @@ public class PublicApiController {
       @RequestBody AiQuestion question
   ) {
     return ApiResponse.ok(service.answer(security.requireStudent(authorization), question));
+  }
+
+  @GetMapping("/ai/chat/history")
+  public ApiResponse<List<AiChatHistoryItem>> aiChatHistory(
+      @RequestHeader("Authorization") String authorization,
+      @RequestParam(required = false) String reportId
+  ) {
+    return ApiResponse.ok(service.aiChatHistory(security.requireStudent(authorization), reportId));
+  }
+
+  @GetMapping("/favorites")
+  public ApiResponse<List<FavoriteItem>> favorites(@RequestHeader("Authorization") String authorization) {
+    return ApiResponse.ok(service.favorites(security.requireStudent(authorization)));
+  }
+
+  @PostMapping("/favorites")
+  public ApiResponse<Map<String, Object>> toggleFavorite(
+      @RequestHeader("Authorization") String authorization,
+      @RequestBody FavoriteRequest request
+  ) {
+    return ApiResponse.message("收藏状态已更新", service.toggleFavorite(security.requireStudent(authorization), request));
   }
 
   @GetMapping("/community/posts")

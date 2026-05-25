@@ -4,6 +4,7 @@ import com.careercompass.model.Dtos.*;
 import com.careercompass.service.CompassService;
 import java.util.List;
 import java.util.Map;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -41,6 +42,11 @@ public class AdminApiController {
     return ApiResponse.message("内容保存成功", service.saveContent(item));
   }
 
+  @DeleteMapping("/contents/{id}")
+  public ApiResponse<Map<String, Object>> deleteContent(@PathVariable long id) {
+    return ApiResponse.message("内容已删除", service.deleteContent(id));
+  }
+
   @GetMapping("/community/posts")
   public ApiResponse<List<CommunityPost>> posts() {
     return ApiResponse.ok(service.adminCommunityPosts());
@@ -54,6 +60,16 @@ public class AdminApiController {
   @PostMapping("/community/best-answer")
   public ApiResponse<Map<String, Object>> bestAnswer(@RequestBody BestAnswerRequest request) {
     return ApiResponse.message("最佳回答状态已更新", service.adminSetBestAnswer(request));
+  }
+
+  @GetMapping("/community/comments")
+  public ApiResponse<List<CommunityComment>> comments(@RequestParam(required = false) String status) {
+    return ApiResponse.ok(service.adminComments(status));
+  }
+
+  @PostMapping("/community/comment/status")
+  public ApiResponse<Map<String, Object>> updateCommentStatus(@RequestBody AdminStatusRequest request) {
+    return ApiResponse.message("评论状态已更新", service.updateCommentStatus(request));
   }
 
   @GetMapping("/community/users")

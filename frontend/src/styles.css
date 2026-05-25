@@ -1457,6 +1457,89 @@ th {
   line-height: 1.8;
 }
 
+.report-thread-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+}
+
+.report-thread-sidebar {
+  position: sticky;
+  top: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--shadow);
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+  max-height: calc(100vh - 120px);
+}
+
+.thread-sidebar-head strong,
+.thread-sidebar-head span {
+  display: block;
+}
+
+.thread-sidebar-head span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.thread-list {
+  display: grid;
+  gap: 8px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.thread-item {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 10px;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.thread-item.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.thread-item span,
+.thread-item small {
+  display: block;
+}
+
+.thread-item span {
+  font-weight: 800;
+}
+
+.thread-item small {
+  margin-top: 5px;
+  color: var(--muted);
+}
+
+.report-thread-main {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.report-thread-message {
+  display: grid;
+  gap: 16px;
+}
+
+.compact-empty {
+  padding: 14px;
+}
+
 .reason-box p,
 .plan-item p,
 .info-list p {
@@ -1977,8 +2060,18 @@ th {
   .content-grid.two,
   .content-grid.split,
   .path-news-layout,
+  .report-thread-layout,
   .community-composer-layout {
     grid-template-columns: 1fr;
+  }
+
+  .report-thread-sidebar {
+    position: static;
+    max-height: none;
+  }
+
+  .thread-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .community-compose-meta {
@@ -2041,6 +2134,11 @@ th {
   .topbar-actions {
     overflow-x: auto;
     padding-bottom: 2px;
+  }
+
+  .thread-list,
+  .community-filter-row {
+    grid-template-columns: 1fr;
   }
 
   .hero-panel {

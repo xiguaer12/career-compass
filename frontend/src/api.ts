@@ -109,6 +109,23 @@ export type AiAnswer = {
   answerText?: string;
 };
 
+export type AiChatHistoryItem = {
+  id: number;
+  reportId: number;
+  question: string;
+  answer: AiAnswer;
+  createdAt: string;
+};
+
+export type FavoriteItem = {
+  id: number;
+  itemType: string;
+  itemId: string;
+  title: string;
+  url?: string;
+  createdAt: string;
+};
+
 export type Dashboard = {
   registeredUsers: number;
   activeUsers: number;
@@ -176,6 +193,7 @@ export type PathConfigItem = Omit<PathPage, "templates" | "highlights">;
 export type CommunityComment = {
   id: number;
   postId: number;
+  parentCommentId?: number | null;
   body: string;
   authorDisplay: string;
   bestAnswer: boolean;
@@ -228,6 +246,19 @@ export type StudentAdminItem = {
   status: string;
   createdAt: string;
   lastLoginAt?: string;
+};
+
+export type CommunityUserAdminItem = {
+  id: number;
+  name: string;
+  studentNo: string;
+  posts: number;
+  comments: number;
+  reports: number;
+  status: string;
+  punishmentReason?: string;
+  mutedUntil?: string;
+  bannedUntil?: string;
 };
 
 export type CrawlCandidateItem = {
@@ -369,6 +400,13 @@ export const studentApi = {
   retryReport: (token: string, reportId: number) => api<ReportTask>(`/api/reports/${reportId}/retry`, { method: "POST" }, token),
   chat: (token: string, reportId: number | string, question: string, history: Array<Record<string, string>> = []) =>
     api<AiAnswer>("/api/ai/chat", { method: "POST", body: JSON.stringify({ reportId: String(reportId), question, history }) }, token),
+  chatHistory: (token: string, reportId: number | string) =>
+    api<AiChatHistoryItem[]>(`/api/ai/chat/history?reportId=${encodeURIComponent(String(reportId))}`, {}, token),
+  favorites: (token: string) => api<FavoriteItem[]>("/api/favorites", {}, token),
+  toggleFavorite: (token: string, itemType: string, itemId: string, title: string, url = "") =>
+    api<Record<string, unknown>>("/api/favorites", { method: "POST", body: JSON.stringify({ itemType, itemId, title, url }) }, token),
+  recordTemplateDownload: (token: string, id: number) =>
+    api<{ templateId: number; name: string; url: string; format: string; loggedAt: string }>(`/api/templates/${id}/download`, { method: "POST" }, token),
   messages: (token: string) => api<MessageItem[]>("/api/messages", {}, token),
   readMessage: (token: string, id: number) => api<Record<string, unknown>>(`/api/messages/${id}/read`, { method: "PATCH" }, token),
   readAllMessages: (token: string) => api<Record<string, unknown>>("/api/messages/read-all", { method: "POST" }, token),
@@ -421,8 +459,8 @@ export const communityApi = {
     api<Record<string, unknown>>("/api/community/interaction", { method: "POST", body: JSON.stringify({ postId, type }) }, token),
   report: (token: string, targetId: number, reason: string, targetType = "post") =>
     api<Record<string, unknown>>("/api/community/report", { method: "POST", body: JSON.stringify({ targetId, targetType, reason }) }, token),
-  comment: (token: string, postId: number, body: string) =>
-    api<Record<string, unknown>>("/api/community/comments", { method: "POST", body: JSON.stringify({ postId, body }) }, token),
+  comment: (token: string, postId: number, body: string, parentCommentId?: number | null) =>
+    api<Record<string, unknown>>("/api/community/comments", { method: "POST", body: JSON.stringify({ postId, body, parentCommentId }) }, token),
   bestAnswer: (token: string, commentId: number, bestAnswer: boolean) =>
     api<Record<string, unknown>>("/api/community/best-answer", { method: "PATCH", body: JSON.stringify({ commentId, bestAnswer }) }, token)
 };
@@ -434,6 +472,8 @@ export const adminApi = {
   contents: (token: string) => api<ContentItem[]>("/admin/contents", {}, token),
   saveContent: (token: string, content: Partial<ContentItem> & { body?: string; sourceName?: string; sourceUrl?: string; tags?: string; displayPosition?: string; sortOrder?: number }) =>
     api<Record<string, unknown>>("/admin/content/save", { method: "POST", body: JSON.stringify(content) }, token),
+  deleteContent: (token: string, id: number) =>
+    api<Record<string, unknown>>(`/admin/contents/${id}`, { method: "DELETE" }, token),
   sources: (token?: string) => api<CrawlSource[]>("/admin/sources", {}, token),
   saveSource: (token: string, source: Partial<CrawlSource> & { frequency?: string; trustLevel?: string; parserRule?: Record<string, unknown> }) =>
     api<Record<string, unknown>>(
@@ -461,6 +501,14 @@ export const adminApi = {
       { method: "POST", body: JSON.stringify({ id, status, reason }) },
       token
     ),
+  comments: (token: string, status = "") =>
+    api<CommunityComment[]>(`/admin/community/comments${status ? `?status=${encodeURIComponent(status)}` : ""}`, {}, token),
+  updateCommentStatus: (token: string, id: number, status: string, reason = "后台评论审核") =>
+    api<Record<string, unknown>>(
+      "/admin/community/comment/status",
+      { method: "POST", body: JSON.stringify({ id, status, reason }) },
+      token
+    ),
   triggerCrawl: (token: string, id: number) => api<Record<string, unknown>>(`/admin/sources/${id}/crawl`, { method: "POST" }, token),
   paths: (token: string) => api<PathConfigItem[]>("/admin/paths", {}, token),
   savePath: (token: string, path: Partial<PathConfigItem>) =>
@@ -471,6 +519,7 @@ export const adminApi = {
   },
   updateStudentStatus: (token: string, id: number, status: string, reason = "后台操作") =>
     api<Record<string, unknown>>("/admin/users/status", { method: "POST", body: JSON.stringify({ id, status, reason }) }, token),
+  communityUsers: (token: string) => api<CommunityUserAdminItem[]>("/admin/community/users", {}, token),
   candidates: (token: string, status = "") =>
     api<CrawlCandidateItem[]>(`/admin/crawl/candidates${status ? `?status=${encodeURIComponent(status)}` : ""}`, {}, token),
   reviewCandidate: (token: string, id: number, action: string, patch: Record<string, unknown> = {}) =>

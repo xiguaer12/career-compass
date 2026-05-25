@@ -140,6 +140,9 @@ public class CompassService {
     createRuntimeTables();
     addColumn("student_account", "canceled_at TIMESTAMP NULL");
     addColumn("student_account", "profile_updated_at TIMESTAMP NULL");
+    addColumn("student_account", "punishment_reason VARCHAR(300)");
+    addColumn("student_account", "muted_until TIMESTAMP NULL");
+    addColumn("student_account", "banned_until TIMESTAMP NULL");
     addColumn("questionnaire_snapshot", "step_key VARCHAR(60)");
     addColumn("questionnaire_snapshot", "completion_percent INT NOT NULL DEFAULT 0");
     addColumn("questionnaire_snapshot", "expires_at TIMESTAMP NULL");
@@ -164,6 +167,8 @@ public class CompassService {
     addColumn("community_comment", "best_answer TINYINT(1) NOT NULL DEFAULT 0");
     addColumn("community_comment", "updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
     addColumn("abuse_report", "handled_result VARCHAR(300)");
+    addColumn("admin_account", "failed_login_count INT NOT NULL DEFAULT 0");
+    addColumn("admin_account", "locked_until TIMESTAMP NULL");
     addColumn("data_source", "parser_rule_json JSON");
     addColumn("crawl_candidate", "task_id BIGINT NULL");
     repairSeedData();
@@ -249,7 +254,7 @@ public class CompassService {
     validateAuth(request);
     String email = normalizeEmail(request.email());
     List<Map<String, Object>> rows = jdbc.queryForList(
-        "select id, password_hash, status from student_account where email = ?",
+        "select id, password_hash, status, banned_until from student_account where email = ?",
         email
     );
     if (rows.isEmpty()) {
@@ -271,18 +276,33 @@ public class CompassService {
       throw new IllegalArgumentException("管理员账号和密码不能为空");
     }
     List<Map<String, Object>> rows = jdbc.queryForList(
-        "select id, username, password_hash, display_name, status from admin_account where username = ?",
+        "select id, username, password_hash, display_name, status, failed_login_count, locked_until from admin_account where username = ?",
         request.username()
     );
     if (rows.isEmpty() || !"正常".equals(String.valueOf(rows.getFirst().get("status")))) {
       throw new IllegalArgumentException("管理员账号不可用");
     }
     Map<String, Object> row = rows.getFirst();
+    Timestamp lockedUntil = (Timestamp) row.get("locked_until");
+    if (lockedUntil != null && lockedUntil.toInstant().isAfter(Instant.now())) {
+      throw new IllegalArgumentException("管理员账号已临时锁定，请 15 分钟后再试");
+    }
     if (!security.verifyPassword(request.password(), String.valueOf(row.get("password_hash")))) {
+      int failed = row.get("failed_login_count") instanceof Number number ? number.intValue() + 1 : 1;
+      if (failed >= 5) {
+        jdbc.update(
+            "update admin_account set failed_login_count = ?, locked_until = ? where username = ?",
+            failed,
+            Timestamp.from(Instant.now().plus(Duration.ofMinutes(15))),
+            request.username()
+        );
+      } else {
+        jdbc.update("update admin_account set failed_login_count = ? where username = ?", failed, request.username());
+      }
       throw new IllegalArgumentException("管理员账号或密码错误");
     }
     long id = ((Number) row.get("id")).longValue();
-    jdbc.update("update admin_account set last_login_at = current_timestamp where id = ?", id);
+    jdbc.update("update admin_account set failed_login_count = 0, locked_until = null, last_login_at = current_timestamp where id = ?", id);
     return new AdminSession(security.issueToken(id, request.username(), "admin"), "admin", String.valueOf(row.get("display_name")));
   }
 
@@ -457,6 +477,13 @@ public class CompassService {
     return Map.of("id", id, "status", "已保存");
   }
 
+  public Map<String, Object> deleteContent(long id) {
+    int updated = jdbc.update("delete from content_info where id = ?", id);
+    if (updated == 0) throw new IllegalArgumentException("内容不存在");
+    audit("admin", "DELETE_CONTENT", "content_info", String.valueOf(id), Map.of("deleted", true));
+    return Map.of("id", id, "status", "已删除");
+  }
+
   public WorkbenchResponse workbench(AuthUser user) {
     requireCompletedStudent(user);
     StudentProfile profile = me(user);
@@ -579,6 +606,27 @@ public class CompassService {
         (rs, rowNum) -> mapTemplate(rs),
         category
     );
+  }
+
+  public TemplateDownload recordTemplateDownload(AuthUser user, long templateId) {
+    List<TemplateResource> rows = jdbc.query(
+        "select * from template_resource where id = ? and status = '已发布'",
+        (rs, rowNum) -> mapTemplate(rs),
+        templateId
+    );
+    if (rows.isEmpty()) {
+      throw new IllegalArgumentException("该资源暂不可下载");
+    }
+    TemplateResource template = rows.getFirst();
+    jdbc.update(
+        "insert into template_download_log (student_id, template_id, template_name, file_url) values (?, ?, ?, ?)",
+        user.id(),
+        template.id(),
+        template.name(),
+        template.url()
+    );
+    audit("student:" + user.email(), "DOWNLOAD_TEMPLATE", "template_resource", String.valueOf(template.id()), Map.of("name", template.name()));
+    return new TemplateDownload(template.id(), template.name(), template.url(), template.format(), Instant.now().toString());
   }
 
   public ChartBundle charts() {
@@ -842,6 +890,29 @@ public class CompassService {
     return latestReport(user);
   }
 
+  private Optional<Long> reportIdForQuestion(AuthUser user, AiQuestion question) {
+    if (question != null && StringUtils.hasText(question.reportId())) {
+      try {
+        long reportId = Long.parseLong(question.reportId());
+        Integer count = jdbc.queryForObject(
+            "select count(*) from ai_report where id = ? and student_id = ? and generation_status = '已完成'",
+            Integer.class,
+            reportId,
+            user.id()
+        );
+        if (count != null && count > 0) return Optional.of(reportId);
+      } catch (NumberFormatException ignored) {
+        // Fall back to latest report id.
+      }
+    }
+    List<Long> rows = jdbc.query(
+        "select id from ai_report where student_id = ? and generation_status = '已完成' order by generated_at desc, id desc limit 1",
+        (rs, rowNum) -> rs.getLong("id"),
+        user.id()
+    );
+    return rows.stream().findFirst();
+  }
+
   private String latestAiConfigContent(String type, String fallback) {
     List<String> rows = jdbc.query(
         """
@@ -897,7 +968,80 @@ public class CompassService {
         fallbackText
     );
     AiReport report = reportForQuestion(user, question).orElse(null);
-    return llmClient.answer(report, question, latestAiConfigContent("prompt", "围绕报告正文和访谈素材自由回答追问，可以自然展开分析，不需要按固定维度分栏；不输出录取、上岸、就业结果承诺。"), fallback);
+    AiAnswer answer = llmClient.answer(report, question, latestAiConfigContent("prompt", "围绕报告正文和访谈素材自由回答追问，可以自然展开分析，不需要按固定维度分栏；不输出录取、上岸、就业结果承诺。"), fallback);
+    reportIdForQuestion(user, question).ifPresent(reportId -> jdbc.update(
+        "insert into ai_chat_message (student_id, report_id, question, answer_json) values (?, ?, ?, cast(? as json))",
+        user.id(),
+        reportId,
+        asked,
+        toJson(answer)
+    ));
+    return answer;
+  }
+
+  public List<AiChatHistoryItem> aiChatHistory(AuthUser user, String reportIdText) {
+    Optional<Long> reportId = reportIdForQuestion(user, new AiQuestion(reportIdText, "", List.of()));
+    if (reportId.isEmpty()) return List.of();
+    return jdbc.query(
+        "select * from ai_chat_message where student_id = ? and report_id = ? order by created_at asc, id asc",
+        (rs, rowNum) -> new AiChatHistoryItem(
+            rs.getLong("id"),
+            rs.getLong("report_id"),
+            rs.getString("question"),
+            fromJson(rs.getString("answer_json"), AiAnswer.class),
+            toInstantString(rs.getTimestamp("created_at"))
+        ),
+        user.id(),
+        reportId.get()
+    );
+  }
+
+  public Map<String, Object> toggleFavorite(AuthUser user, FavoriteRequest request) {
+    if (request == null || !StringUtils.hasText(request.itemType()) || !StringUtils.hasText(request.itemId())) {
+      throw new IllegalArgumentException("收藏对象不能为空");
+    }
+    String itemType = request.itemType().trim();
+    String itemId = request.itemId().trim();
+    String title = valueOr(request.title(), itemType + " " + itemId);
+    Integer exists = jdbc.queryForObject(
+        "select count(*) from user_favorite where student_id = ? and item_type = ? and item_id = ?",
+        Integer.class,
+        user.id(),
+        itemType,
+        itemId
+    );
+    boolean active;
+    if (exists != null && exists > 0) {
+      jdbc.update("delete from user_favorite where student_id = ? and item_type = ? and item_id = ?", user.id(), itemType, itemId);
+      active = false;
+    } else {
+      jdbc.update(
+          "insert into user_favorite (student_id, item_type, item_id, title, url) values (?, ?, ?, ?, ?)",
+          user.id(),
+          itemType,
+          itemId,
+          title,
+          request.url()
+      );
+      active = true;
+    }
+    audit("student:" + user.email(), active ? "ADD_FAVORITE" : "REMOVE_FAVORITE", itemType, itemId, Map.of("title", title));
+    return Map.of("itemType", itemType, "itemId", itemId, "active", active);
+  }
+
+  public List<FavoriteItem> favorites(AuthUser user) {
+    return jdbc.query(
+        "select * from user_favorite where student_id = ? order by created_at desc, id desc",
+        (rs, rowNum) -> new FavoriteItem(
+            rs.getLong("id"),
+            rs.getString("item_type"),
+            rs.getString("item_id"),
+            rs.getString("title"),
+            rs.getString("url"),
+            toInstantString(rs.getTimestamp("created_at"))
+        ),
+        user.id()
+    );
   }
 
   public List<CommunityPost> communityPosts(String path, String type, String keyword, String sort) {
@@ -939,6 +1083,7 @@ public class CompassService {
 
   public CommunityPost createPost(AuthUser user, PostRequest request) {
     requireCompletedStudent(user);
+    requireCommunityWriteAllowed(user);
     validatePost(request);
     List<String> imageUrls = normalizePostImages(request.imageUrls());
     KeyHolder keyHolder = new GeneratedKeyHolder();
@@ -967,6 +1112,7 @@ public class CompassService {
   }
 
   public CommunityPost updateOwnPost(AuthUser user, long id, PostRequest request) {
+    requireCommunityWriteAllowed(user);
     validatePost(request);
     List<String> imageUrls = normalizePostImages(request.imageUrls());
     int updated = jdbc.update(
@@ -992,6 +1138,7 @@ public class CompassService {
 
   public List<String> storeCommunityImages(AuthUser user, List<MultipartFile> files) {
     requireCompletedStudent(user);
+    requireCommunityWriteAllowed(user);
     if (files == null || files.isEmpty()) {
       throw new IllegalArgumentException("请选择要上传的图片");
     }
@@ -1031,6 +1178,7 @@ public class CompassService {
 
   public Map<String, Object> addComment(AuthUser user, CommentRequest request) {
     requireCompletedStudent(user);
+    requireCommunityWriteAllowed(user);
     if (request == null || !StringUtils.hasText(request.body())) {
       throw new IllegalArgumentException("评论内容不能为空");
     }
@@ -1087,6 +1235,7 @@ public class CompassService {
         (rs, rowNum) -> new CommunityComment(
             rs.getLong("id"),
             rs.getLong("post_id"),
+            nullableLong(rs, "parent_comment_id"),
             rs.getString("body"),
             rs.getString("author_name"),
             rs.getBoolean("best_answer"),
@@ -1095,6 +1244,47 @@ public class CompassService {
         ),
         postId
     );
+  }
+
+  public List<CommunityComment> adminComments(String status) {
+    StringBuilder sql = new StringBuilder(
+        """
+        select c.*, coalesce(s.nickname, s.name, '匿名用户') as author_name
+        from community_comment c
+        join student_account s on s.id = c.student_id
+        where 1 = 1
+        """
+    );
+    List<Object> params = new ArrayList<>();
+    if (StringUtils.hasText(status) && !"全部".equals(status)) {
+      sql.append(" and c.status = ?");
+      params.add(status);
+    }
+    sql.append(" order by c.created_at desc, c.id desc limit 300");
+    return jdbc.query(
+        sql.toString(),
+        (rs, rowNum) -> new CommunityComment(
+            rs.getLong("id"),
+            rs.getLong("post_id"),
+            nullableLong(rs, "parent_comment_id"),
+            rs.getString("body"),
+            rs.getString("author_name"),
+            rs.getBoolean("best_answer"),
+            rs.getString("status"),
+            rs.getTimestamp("created_at").toInstant()
+        ),
+        params.toArray()
+    );
+  }
+
+  public Map<String, Object> updateCommentStatus(AdminStatusRequest request) {
+    if (request == null || request.id() <= 0 || !StringUtils.hasText(request.status())) {
+      throw new IllegalArgumentException("评论审核状态不能为空");
+    }
+    int updated = jdbc.update("update community_comment set status = ?, updated_at = current_timestamp where id = ?", request.status(), request.id());
+    if (updated == 0) throw new IllegalArgumentException("评论不存在");
+    audit("admin", "UPDATE_COMMENT_STATUS", "community_comment", String.valueOf(request.id()), Map.of("status", request.status(), "reason", valueOr(request.reason(), "")));
+    return Map.of("id", request.id(), "status", request.status());
   }
 
   public Map<String, Object> toggleInteraction(AuthUser user, InteractionRequest request) {
@@ -1127,15 +1317,26 @@ public class CompassService {
     if (request == null || !StringUtils.hasText(request.reason())) {
       throw new IllegalArgumentException("举报原因不能为空");
     }
+    String targetType = valueOr(request.targetType(), "post");
+    Integer existing = jdbc.queryForObject(
+        "select count(*) from abuse_report where reporter_student_id = ? and target_type = ? and target_id = ?",
+        Integer.class,
+        user.id(),
+        targetType,
+        request.targetId()
+    );
+    if (existing != null && existing > 0) {
+      throw new IllegalArgumentException("您已举报过该内容");
+    }
     jdbc.update(
         "insert into abuse_report (reporter_student_id, target_type, target_id, reason, status) values (?, ?, ?, ?, '待处理')",
         user.id(),
-        valueOr(request.targetType(), "post"),
+        targetType,
         request.targetId(),
         request.reason()
     );
-    audit("student:" + user.email(), "REPORT_ABUSE", valueOr(request.targetType(), "post"), String.valueOf(request.targetId()), Map.of("reason", request.reason()));
-    return Map.of("targetId", request.targetId(), "targetType", valueOr(request.targetType(), "post"), "status", "待处理");
+    audit("student:" + user.email(), "REPORT_ABUSE", targetType, String.valueOf(request.targetId()), Map.of("reason", request.reason()));
+    return Map.of("targetId", request.targetId(), "targetType", targetType, "status", "待处理");
   }
 
   public Map<String, Object> userCommunity(AuthUser user) {
@@ -1233,20 +1434,26 @@ public class CompassService {
   public List<CommunityUser> communityUsers() {
     return jdbc.query(
         """
-        select s.nickname, s.name, s.student_no, s.status,
+        select s.id, s.nickname, s.name, s.student_no, s.status, s.punishment_reason, s.muted_until, s.banned_until,
                count(p.id) as posts,
+               (select count(*) from community_comment c where c.student_id = s.id) as comments,
                (select count(*) from abuse_report r where r.reporter_student_id = s.id) as reports
         from student_account s
         left join community_post p on p.student_id = s.id and p.deleted_at is null
-        group by s.id, s.nickname, s.name, s.student_no, s.status
+        group by s.id, s.nickname, s.name, s.student_no, s.status, s.punishment_reason, s.muted_until, s.banned_until
         order by posts desc, s.id desc
         """,
         (rs, rowNum) -> new CommunityUser(
+            rs.getLong("id"),
             Optional.ofNullable(rs.getString("nickname")).orElse(Optional.ofNullable(rs.getString("name")).orElse("未命名用户")),
             rs.getString("student_no"),
             rs.getInt("posts"),
+            rs.getInt("comments"),
             rs.getInt("reports"),
-            rs.getString("status")
+            rs.getString("status"),
+            rs.getString("punishment_reason"),
+            toInstantString(rs.getTimestamp("muted_until")),
+            toInstantString(rs.getTimestamp("banned_until"))
         )
     );
   }
@@ -1484,7 +1691,22 @@ public class CompassService {
     if (request == null || request.id() <= 0 || !StringUtils.hasText(request.status())) {
       throw new IllegalArgumentException("用户状态不能为空");
     }
-    int updated = jdbc.update("update student_account set status = ? where id = ?", request.status(), request.id());
+    int updated = jdbc.update(
+        """
+        update student_account
+        set status = ?,
+            punishment_reason = case when ? in ('正常','已完成引导') then null else ? end,
+            muted_until = case when ? in ('正常','已完成引导') then null else muted_until end,
+            banned_until = case when ? in ('正常','已完成引导') then null else banned_until end
+        where id = ?
+        """,
+        request.status(),
+        request.status(),
+        valueOr(request.reason(), ""),
+        request.status(),
+        request.status(),
+        request.id()
+    );
     if (updated == 0) throw new IllegalArgumentException("用户不存在");
     audit("admin", "UPDATE_USER_STATUS", "student_account", String.valueOf(request.id()), Map.of("status", request.status(), "reason", valueOr(request.reason(), "")));
     createMessage(request.id(), "账号", "账号状态已更新", "你的账号状态已更新为：" + request.status(), "/me");
@@ -1760,7 +1982,21 @@ public class CompassService {
     if (request == null || request.id() <= 0 || !StringUtils.hasText(request.status())) {
       throw new IllegalArgumentException("用户状态不能为空");
     }
-    jdbc.update("update student_account set status = ? where id = ?", request.status(), request.id());
+    String status = request.status();
+    Timestamp mutedUntil = "禁言中".equals(status) ? Timestamp.from(Instant.now().plus(Duration.ofDays(7))) : null;
+    Timestamp bannedUntil = "封禁中".equals(status) ? Timestamp.from(Instant.now().plus(Duration.ofDays(30))) : null;
+    jdbc.update(
+        """
+        update student_account
+        set status = ?, punishment_reason = ?, muted_until = ?, banned_until = ?
+        where id = ?
+        """,
+        status,
+        valueOr(request.reason(), "后台用户处罚"),
+        mutedUntil,
+        bannedUntil,
+        request.id()
+    );
     audit("admin", "UPDATE_USER_STATUS", "student_account", String.valueOf(request.id()), Map.of("status", request.status(), "reason", valueOr(request.reason(), "")));
     createMessage(request.id(), "账号", "账号状态已更新", "你的账号状态已更新为：" + request.status(), "/me");
     return Map.of("userId", request.id(), "status", request.status(), "updatedAt", Instant.now().toString());
@@ -2550,6 +2786,42 @@ public class CompassService {
         )
         """);
     execute("""
+        create table if not exists user_favorite (
+          id bigint primary key auto_increment,
+          student_id bigint not null,
+          item_type varchar(40) not null,
+          item_id varchar(80) not null,
+          title varchar(160) not null,
+          url varchar(500),
+          created_at timestamp not null default current_timestamp,
+          unique key uq_user_favorite (student_id, item_type, item_id),
+          index idx_user_favorite_student (student_id, created_at)
+        )
+        """);
+    execute("""
+        create table if not exists ai_chat_message (
+          id bigint primary key auto_increment,
+          student_id bigint not null,
+          report_id bigint not null,
+          question text not null,
+          answer_json json not null,
+          created_at timestamp not null default current_timestamp,
+          index idx_ai_chat_student_report (student_id, report_id, created_at)
+        )
+        """);
+    execute("""
+        create table if not exists template_download_log (
+          id bigint primary key auto_increment,
+          student_id bigint not null,
+          template_id bigint not null,
+          template_name varchar(120) not null,
+          file_url varchar(500) not null,
+          created_at timestamp not null default current_timestamp,
+          index idx_template_download_student (student_id, created_at),
+          index idx_template_download_template (template_id, created_at)
+        )
+        """);
+    execute("""
         create table if not exists crawl_task (
           id bigint primary key auto_increment,
           source_id bigint not null,
@@ -2569,6 +2841,8 @@ public class CompassService {
           password_hash varchar(255) not null,
           display_name varchar(80) not null,
           status varchar(30) not null default '正常',
+          failed_login_count int not null default 0,
+          locked_until timestamp null,
           created_at timestamp not null default current_timestamp,
           last_login_at timestamp null
         )
@@ -3171,6 +3445,11 @@ public class CompassService {
     }
   }
 
+  private Long nullableLong(ResultSet rs, String column) throws java.sql.SQLException {
+    long value = rs.getLong(column);
+    return rs.wasNull() ? null : value;
+  }
+
   private void scheduleReportGeneration(long reportId, long studentId, String email, Map<String, Object> answers, String questionnaireVersion) {
     reportExecutor.schedule(() -> {
       try {
@@ -3707,16 +3986,35 @@ public class CompassService {
 
   private void requireCompletedStudent(AuthUser user) {
     StudentProfile profile = me(user);
-    if (!"已完成引导".equals(profile.status())) {
+    if (!List.of("已完成引导", "禁言中").contains(profile.status())) {
       throw new IllegalArgumentException("请先完成 AI 访谈并生成报告");
+    }
+  }
+
+  private void requireCommunityWriteAllowed(AuthUser user) {
+    List<Map<String, Object>> rows = jdbc.queryForList(
+        "select status, muted_until, banned_until from student_account where id = ?",
+        user.id()
+    );
+    if (rows.isEmpty()) throw new IllegalArgumentException("学生不存在");
+    Map<String, Object> row = rows.getFirst();
+    if (isFutureTimestamp(row.get("banned_until")) || "封禁中".equals(String.valueOf(row.get("status"))) || "已禁用".equals(String.valueOf(row.get("status")))) {
+      throw new IllegalArgumentException("当前账号已被封禁，不能发布社区内容");
+    }
+    if (isFutureTimestamp(row.get("muted_until")) || "禁言中".equals(String.valueOf(row.get("status")))) {
+      throw new IllegalArgumentException("当前账号处于禁言状态，不能发布社区内容");
     }
   }
 
   private void assertLoginAllowed(Map<String, Object> row) {
     String status = String.valueOf(row.get("status"));
-    if ("已禁用".equals(status) || "已注销".equals(status) || "注销中".equals(status)) {
+    if ("已禁用".equals(status) || "已注销".equals(status) || "注销中".equals(status) || "封禁中".equals(status) || isFutureTimestamp(row.get("banned_until"))) {
       throw new IllegalArgumentException("当前账号状态不允许登录：" + status);
     }
+  }
+
+  private boolean isFutureTimestamp(Object value) {
+    return value instanceof Timestamp timestamp && timestamp.toInstant().isAfter(Instant.now());
   }
 
   private String interactionSelectColumns(Long viewerStudentId) {

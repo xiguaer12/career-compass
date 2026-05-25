@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS student_account (
   privacy_json JSON,
   agreement_accepted TINYINT(1) NOT NULL DEFAULT 0,
   status VARCHAR(30) NOT NULL DEFAULT '待完成问卷',
+  punishment_reason VARCHAR(300),
+  muted_until TIMESTAMP NULL,
+  banned_until TIMESTAMP NULL,
   canceled_at TIMESTAMP NULL,
   profile_updated_at TIMESTAMP NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -187,6 +190,44 @@ CREATE TABLE IF NOT EXISTS community_comment (
   INDEX idx_comment_post_created (post_id, created_at)
 );
 
+CREATE TABLE IF NOT EXISTS user_favorite (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  student_id BIGINT NOT NULL,
+  item_type VARCHAR(40) NOT NULL,
+  item_id VARCHAR(80) NOT NULL,
+  title VARCHAR(160) NOT NULL,
+  url VARCHAR(500),
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_favorite_student FOREIGN KEY (student_id) REFERENCES student_account(id),
+  UNIQUE KEY uq_user_favorite (student_id, item_type, item_id),
+  INDEX idx_user_favorite_student (student_id, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS ai_chat_message (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  student_id BIGINT NOT NULL,
+  report_id BIGINT NOT NULL,
+  question TEXT NOT NULL,
+  answer_json JSON NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_ai_chat_student FOREIGN KEY (student_id) REFERENCES student_account(id),
+  CONSTRAINT fk_ai_chat_report FOREIGN KEY (report_id) REFERENCES ai_report(id),
+  INDEX idx_ai_chat_student_report (student_id, report_id, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS template_download_log (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  student_id BIGINT NOT NULL,
+  template_id BIGINT NOT NULL,
+  template_name VARCHAR(120) NOT NULL,
+  file_url VARCHAR(500) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_download_student FOREIGN KEY (student_id) REFERENCES student_account(id),
+  CONSTRAINT fk_download_template FOREIGN KEY (template_id) REFERENCES template_resource(id),
+  INDEX idx_template_download_student (student_id, created_at),
+  INDEX idx_template_download_template (template_id, created_at)
+);
+
 CREATE TABLE IF NOT EXISTS community_interaction (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   post_id BIGINT NOT NULL,
@@ -290,6 +331,8 @@ CREATE TABLE IF NOT EXISTS admin_account (
   password_hash VARCHAR(255) NOT NULL,
   display_name VARCHAR(80) NOT NULL,
   status VARCHAR(30) NOT NULL DEFAULT '正常',
+  failed_login_count INT NOT NULL DEFAULT 0,
+  locked_until TIMESTAMP NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_login_at TIMESTAMP NULL
 );
