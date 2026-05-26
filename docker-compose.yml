@@ -34,6 +34,8 @@ services:
     environment:
       ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me-admin-token}
       JWT_SECRET: ${JWT_SECRET:-career-compass-local-secret-change-me}
+      REQUIRE_STRONG_SECRETS: ${REQUIRE_STRONG_SECRETS:-false}
+      CORS_ALLOWED_ORIGIN_PATTERNS: ${CORS_ALLOWED_ORIGIN_PATTERNS:-http://localhost:*,http://127.0.0.1:*}
       STUDENT_EMAIL_PATTERN: ${STUDENT_EMAIL_PATTERN:-^\d{10}@st\.usst\.edu\.cn$}
       MAIL_VERIFICATION_ENABLED: ${MAIL_VERIFICATION_ENABLED:-true}
       MAIL_CODE_TTL_MINUTES: ${MAIL_CODE_TTL_MINUTES:-10}

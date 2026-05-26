@@ -33,6 +33,10 @@ management:
 app:
   admin-token: ${ADMIN_TOKEN:change-me-admin-token}
   jwt-secret: ${JWT_SECRET:career-compass-local-secret-change-me}
+  security:
+    require-strong-secrets: ${REQUIRE_STRONG_SECRETS:false}
+  cors:
+    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*}
   student-email-pattern: '${STUDENT_EMAIL_PATTERN:^\d{10}@st\.usst\.edu\.cn$}'
   mail:
     verification-enabled: ${MAIL_VERIFICATION_ENABLED:true}

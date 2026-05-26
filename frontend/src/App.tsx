@@ -19,6 +19,7 @@ import {
   LayoutDashboard,
   LockKeyhole,
   LogIn,
+  LogOut,
   MessagesSquare,
   PenLine,
   Plus,
@@ -37,7 +38,7 @@ import {
   UserRound,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Area,
   AreaChart,
@@ -59,7 +60,6 @@ import {
   XAxis,
   YAxis
 } from "recharts";
-import * as XLSX from "xlsx";
 import {
   adminApi,
   api,
@@ -92,6 +92,7 @@ import {
   type TagItem,
   type WorkbenchResponse
 } from "./api";
+import { parseCsvRows, visibleFavoriteItems } from "./utils";
 import {
   adminQueue
 } from "./data";
@@ -321,39 +322,6 @@ function parseJsonRecord(text: string, label: string) {
   }
 }
 
-function parseCsvRows(text: string) {
-  const rows: string[][] = [];
-  let current = "";
-  let row: string[] = [];
-  let quoted = false;
-  for (let index = 0; index < text.length; index++) {
-    const char = text[index];
-    const next = text[index + 1];
-    if (char === '"' && quoted && next === '"') {
-      current += '"';
-      index++;
-    } else if (char === '"') {
-      quoted = !quoted;
-    } else if (char === "," && !quoted) {
-      row.push(current);
-      current = "";
-    } else if ((char === "\n" || char === "\r") && !quoted) {
-      if (char === "\r" && next === "\n") index++;
-      row.push(current);
-      rows.push(row);
-      row = [];
-      current = "";
-    } else {
-      current += char;
-    }
-  }
-  if (current || row.length) {
-    row.push(current);
-    rows.push(row);
-  }
-  return rows;
-}
-
 const navItems: Array<{ key: TabKey; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { key: "home", label: "首页", icon: LayoutDashboard },
   { key: "workspace", label: "工作台", icon: ClipboardList },
@@ -456,8 +424,8 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar" aria-label="主导航">
+    <div className={`app-shell student-shell ${activeTab === "home" ? "home-shell" : ""}`}>
+      <header className="app-header" aria-label="主导航">
         <div className="brand">
           <span className="brand-mark">
             <Compass size={22} />
@@ -467,7 +435,7 @@ function App() {
             <span>职业规划网站</span>
           </div>
         </div>
-        <nav className="nav-list">
+        <nav className="nav-list top-nav-list">
           {navItems.map((item) => {
             const Icon = item.icon;
             return (
@@ -490,25 +458,20 @@ function App() {
             );
           })}
         </nav>
-        <div className="sidebar-note">
-          <LockKeyhole size={16} />
-          <span>学生端仅保留规划、报告、资料和社区功能</span>
+        <div className="app-header-actions">
+          <button className="secondary-button header-login-button" onClick={session ? logout : () => setAuthOpen(true)}>
+            {session ? <LogOut size={17} /> : <LogIn size={17} />}
+            {session ? "退出" : "学生登录"}
+          </button>
         </div>
-      </aside>
+      </header>
 
       <main className="main">
-        <Topbar
-          activeTab={activeTab}
-          apiStatus={apiStatus}
-          session={session}
-          onLogin={() => setAuthOpen(true)}
-          onLogout={logout}
-        />
         {notice && <div className="toast">{notice}</div>}
         {authOpen && <AuthPanel onClose={() => setAuthOpen(false)} onSession={saveSession} />}
         {activeTab === "home" && <HomeView report={report} onNavigate={setActiveTab} />}
         {activeTab === "workspace" && <WorkspaceView session={session} onLogin={() => setAuthOpen(true)} onReport={setReport} onTask={updateReportTask} setNotice={setNotice} />}
-        {activeTab === "report" && <ReportView report={report} task={reportTask} session={session} onLogin={() => setAuthOpen(true)} onReport={setReport} onTask={updateReportTask} />}
+        {activeTab === "report" && <ReportView report={report} task={reportTask} session={session} onLogin={() => setAuthOpen(true)} onReport={setReport} onTask={updateReportTask} onNavigate={setActiveTab} />}
         {activeTab === "paths" && (
           <PathsView
             report={report}
@@ -614,43 +577,6 @@ function AdminShell({ apiStatus }: { apiStatus: "checking" | "up" | "down" }) {
         <AdminView />
       </main>
     </div>
-  );
-}
-
-function Topbar({
-  activeTab,
-  apiStatus,
-  session,
-  onLogin,
-  onLogout
-}: {
-  activeTab: TabKey;
-  apiStatus: "checking" | "up" | "down";
-  session: Session | null;
-  onLogin: () => void;
-  onLogout: () => void;
-}) {
-  const label = navItems.find((item) => item.key === activeTab)?.label ?? "首页";
-  return (
-    <header className="topbar">
-      <div>
-        <p className="eyebrow">本科应届毕业生未来路径规划平台</p>
-        <h1>{label}</h1>
-      </div>
-      <div className="topbar-actions">
-        <span className={`api-status ${apiStatus}`}>
-          <span />
-          {apiStatus === "up" ? "API 正常" : apiStatus === "down" ? "API 离线" : "API 检查中"}
-        </span>
-        <button className="icon-button" title="搜索">
-          <Search size={18} />
-        </button>
-        <button className="secondary-button" onClick={session ? onLogout : onLogin}>
-          <LogIn size={17} />
-          {session ? "退出" : "学生登录"}
-        </button>
-      </div>
-    </header>
   );
 }
 
@@ -824,10 +750,6 @@ function HomeView({ report, onNavigate }: { report: AiReport | null; onNavigate:
     ...path,
     match: reportScoreForPath(report, path.name) ?? path.match
   }));
-  const topScore = report?.scores?.length
-    ? [...report.scores].sort((a, b) => b.score - a.score)[0]
-    : null;
-  const hasOpenReport = Boolean(report?.narrativeReport?.trim());
   const guideSteps = [
     {
       icon: ClipboardList,
@@ -858,7 +780,8 @@ function HomeView({ report, onNavigate }: { report: AiReport | null; onNavigate:
   ];
 
   return (
-    <div className="page-stack">
+    <TechParticleBlock className="home-space-background">
+      <div className="page-stack home-page-content">
       {homeError && <p className="form-error">{homeError}</p>}
       <section className="hero-panel home-intro-panel">
         <div className="hero-copy">
@@ -878,31 +801,22 @@ function HomeView({ report, onNavigate }: { report: AiReport | null; onNavigate:
             </button>
           </div>
         </div>
-        <aside className="home-next-card" aria-label="推荐开始方式">
-          <div className="home-next-header">
-            <Compass size={24} />
-            <div>
-              <strong>{topScore ? `${topScore.path} ${topScore.score}` : hasOpenReport ? "已生成开放报告" : "先建立你的规划上下文"}</strong>
-              <span>{topScore ? "当前报告中的最高匹配方向" : hasOpenReport ? "进入报告页查看完整正文" : "从 AI 访谈开始"}</span>
-            </div>
-          </div>
-          <div className="home-step-list">
-            {guideSteps.map((step, index) => {
-              const Icon = step.icon;
-              return (
-                <button type="button" className="home-step-item" key={step.title} onClick={() => onNavigate(step.target)}>
-                  <span className="home-step-index">{index + 1}</span>
-                  <Icon size={18} />
-                  <span>
-                    <strong>{step.title}</strong>
-                    <small>{step.description}</small>
-                  </span>
-                  <b>{step.action}</b>
-                </button>
-              );
-            })}
-          </div>
-        </aside>
+        <div className="home-step-list" aria-label="推荐开始方式">
+          {guideSteps.map((step, index) => {
+            const Icon = step.icon;
+            return (
+              <button type="button" className="home-step-item" key={step.title} onClick={() => onNavigate(step.target)}>
+                <span className="home-step-index">{index + 1}</span>
+                <Icon size={18} />
+                <span>
+                  <strong>{step.title}</strong>
+                  <small>{step.description}</small>
+                </span>
+                <b>{step.action}</b>
+              </button>
+            );
+          })}
+        </div>
       </section>
 
       <section className="content-grid three home-capability-grid">
@@ -950,6 +864,167 @@ function HomeView({ report, onNavigate }: { report: AiReport | null; onNavigate:
           </div>
         </div>
       </section>
+      </div>
+    </TechParticleBlock>
+  );
+}
+
+type TechParticle = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  size: number;
+  drift: number;
+  opacity: number;
+};
+
+function TechParticleBlock({ children, className = "" }: { children: ReactNode; className?: string }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pointerRef = useRef({ x: 0, y: 0, active: false, burst: 0 });
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const drawingCanvas = canvas;
+    const drawingContext = context;
+
+    let width = 0;
+    let height = 0;
+    let animationFrame = 0;
+    let particles: TechParticle[] = [];
+
+    function createParticles(nextWidth: number, nextHeight: number) {
+      const count = Math.min(2200, Math.max(760, Math.floor((nextWidth * nextHeight) / 240)));
+      particles = [];
+      for (let index = 0; index < count; index++) {
+        particles.push({
+          x: Math.random() * nextWidth,
+          y: Math.random() * nextHeight,
+          vx: (Math.random() - 0.5) * 0.38,
+          vy: (Math.random() - 0.5) * 0.38,
+          size: 0.35 + Math.random() * 0.9,
+          drift: 0.035 + Math.random() * 0.095,
+          opacity: 0.34 + Math.random() * 0.5
+        });
+      }
+    }
+
+    function resize() {
+      const rect = drawingCanvas.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      width = Math.max(1, Math.floor(rect.width));
+      height = Math.max(1, Math.floor(rect.height));
+      drawingCanvas.width = Math.floor(width * dpr);
+      drawingCanvas.height = Math.floor(height * dpr);
+      drawingContext.setTransform(dpr, 0, 0, dpr, 0, 0);
+      createParticles(width, height);
+    }
+
+    function draw() {
+      drawingContext.clearRect(0, 0, width, height);
+      const gradient = drawingContext.createLinearGradient(0, 0, width, height);
+      gradient.addColorStop(0, "rgba(2, 6, 23, 0.96)");
+      gradient.addColorStop(0.46, "rgba(14, 35, 69, 0.92)");
+      gradient.addColorStop(1, "rgba(5, 62, 74, 0.92)");
+      drawingContext.fillStyle = gradient;
+      drawingContext.fillRect(0, 0, width, height);
+
+      const pointer = pointerRef.current;
+      particles.forEach((particle) => {
+        particle.vx += (Math.random() - 0.5) * particle.drift;
+        particle.vy += (Math.random() - 0.5) * particle.drift;
+
+        if (pointer.active && pointer.burst > 0.02) {
+          const dx = particle.x - pointer.x;
+          const dy = particle.y - pointer.y;
+          const distance = Math.hypot(dx, dy) || 1;
+          const radius = Math.min(118, Math.max(72, width * 0.12));
+          if (distance < radius) {
+            const scatter = (1 - distance / radius) * pointer.burst;
+            const angle = Math.atan2(dy, dx) + (Math.random() - 0.5) * 1.4;
+            const impulse = (0.42 + Math.random() * 1.18) * scatter;
+            particle.vx += Math.cos(angle) * impulse;
+            particle.vy += Math.sin(angle) * impulse;
+          }
+        }
+
+        const speed = Math.hypot(particle.vx, particle.vy);
+        const maxSpeed = pointer.active ? 2.7 : 0.86;
+        if (speed > maxSpeed) {
+          particle.vx = (particle.vx / speed) * maxSpeed;
+          particle.vy = (particle.vy / speed) * maxSpeed;
+        }
+        particle.vx *= 0.982;
+        particle.vy *= 0.982;
+        particle.x += particle.vx;
+        particle.y += particle.vy;
+
+        if (particle.x < 0 || particle.x > width) {
+          particle.vx *= -0.82;
+          particle.x = Math.max(0, Math.min(width, particle.x));
+        }
+        if (particle.y < 0 || particle.y > height) {
+          particle.vy *= -0.82;
+          particle.y = Math.max(0, Math.min(height, particle.y));
+        }
+      });
+
+      particles.forEach((particle) => {
+        const pointerDistance = pointer.active ? Math.hypot(particle.x - pointer.x, particle.y - pointer.y) : 999;
+        const glow = pointer.active && pointer.burst > 0.02 && pointerDistance < 84 ? 0.28 : 0;
+        drawingContext.beginPath();
+        drawingContext.fillStyle = `rgba(255, 255, 255, ${Math.min(0.96, particle.opacity + glow)})`;
+        drawingContext.arc(particle.x, particle.y, particle.size + glow * 0.9, 0, Math.PI * 2);
+        drawingContext.fill();
+      });
+
+      if (pointer.active) {
+        pointer.burst *= 0.68;
+      }
+
+      animationFrame = window.requestAnimationFrame(draw);
+    }
+
+    resize();
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(drawingCanvas);
+    animationFrame = window.requestAnimationFrame(draw);
+    return () => {
+      resizeObserver.disconnect();
+      window.cancelAnimationFrame(animationFrame);
+    };
+  }, []);
+
+  function updatePointer(event: React.PointerEvent<HTMLDivElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    pointerRef.current = {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+      active: true,
+      burst: 1
+    };
+  }
+
+  return (
+    <div
+      className={`home-particle-block ${className}`}
+      onPointerMove={updatePointer}
+      onPointerEnter={updatePointer}
+      onPointerLeave={() => {
+        pointerRef.current.active = false;
+        pointerRef.current.burst = 0;
+      }}
+    >
+      <canvas
+        ref={canvasRef}
+        aria-label="交互式职业路径信号图"
+      />
+      <div className="home-particle-content">
+        {children}
+      </div>
     </div>
   );
 }
@@ -1285,7 +1360,8 @@ function ReportView({
   session,
   onLogin,
   onReport,
-  onTask
+  onTask,
+  onNavigate
 }: {
   report: AiReport | null;
   task: ReportTask | null;
@@ -1293,6 +1369,7 @@ function ReportView({
   onLogin: () => void;
   onReport: (report: AiReport) => void;
   onTask: (task: ReportTask | null) => void;
+  onNavigate: (tab: TabKey) => void;
 }) {
   const [chatQuestion, setChatQuestion] = useState("");
   const [chatAnswers, setChatAnswers] = useState<Array<{ question: string; answer: AiAnswer }>>([]);
@@ -1300,6 +1377,9 @@ function ReportView({
   const [activeReport, setActiveReport] = useState<AiReport | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
   const [threadLoadingId, setThreadLoadingId] = useState<number | null>(null);
+  const [threadError, setThreadError] = useState("");
+  const [chatError, setChatError] = useState("");
+  const [exportError, setExportError] = useState("");
   const [taskBusy, setTaskBusy] = useState(false);
   const [taskMessage, setTaskMessage] = useState("");
   const reportExportRef = useRef<HTMLDivElement | null>(null);
@@ -1319,7 +1399,12 @@ function ReportView({
       setActiveReport(null);
       return;
     }
-    studentApi.reportHistory(session.token).then(setReportThreads).catch(() => undefined);
+    studentApi.reportHistory(session.token)
+      .then((items) => {
+        setReportThreads(items);
+        setThreadError("");
+      })
+      .catch((exception) => setThreadError(exception instanceof Error ? exception.message : "历史报告加载失败"));
   }, [session?.token, report?.id]);
 
   useEffect(() => {
@@ -1327,9 +1412,10 @@ function ReportView({
       setChatAnswers([]);
       return;
     }
+    setChatError("");
     studentApi.chatHistory(session.token, currentReport.id)
       .then((history: AiChatHistoryItem[]) => setChatAnswers(history.map((item) => ({ question: item.question, answer: item.answer }))))
-      .catch(() => undefined);
+      .catch((exception) => setChatError(exception instanceof Error ? exception.message : "报告追问记录加载失败"));
   }, [session?.token, currentReport?.id]);
 
   async function openReportThread(reportId: number) {
@@ -1338,12 +1424,17 @@ function ReportView({
       return;
     }
     setThreadLoadingId(reportId);
+    setThreadError("");
     try {
       const next = await studentApi.reportTask(session.token, reportId);
       if (next.report) {
         setActiveReport(next.report);
         onTask(next);
+      } else {
+        setThreadError(next.message || "这份报告尚未生成完成");
       }
+    } catch (exception) {
+      setThreadError(exception instanceof Error ? exception.message : "报告线程加载失败");
     } finally {
       setThreadLoadingId(null);
     }
@@ -1356,10 +1447,13 @@ function ReportView({
     }
     if (!currentReport || !chatQuestion.trim()) return;
     setChatLoading(true);
+    setChatError("");
     try {
       const answer = await studentApi.chat(session.token, currentReport.id, chatQuestion, chatAnswers.map((item) => ({ role: "user", content: item.question })));
       setChatAnswers([...chatAnswers, { question: chatQuestion, answer }]);
       setChatQuestion("");
+    } catch (exception) {
+      setChatError(exception instanceof Error ? exception.message : "追问发送失败");
     } finally {
       setChatLoading(false);
     }
@@ -1372,6 +1466,7 @@ function ReportView({
   async function exportLongImage() {
     const node = reportExportRef.current;
     if (!node) return;
+    setExportError("");
     const rect = node.getBoundingClientRect();
     const width = Math.ceil(rect.width);
     const height = Math.ceil(node.scrollHeight);
@@ -1383,23 +1478,27 @@ function ReportView({
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width + 48}" height="${height + 48}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml">${xhtml}</div></foreignObject></svg>`;
     const image = new Image();
     const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-    await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve();
-      image.onerror = () => reject(new Error("长图生成失败"));
-      image.src = url;
-    });
-    const canvas = document.createElement("canvas");
-    canvas.width = width + 48;
-    canvas.height = height + 48;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(image, 0, 0);
-    const link = document.createElement("a");
-    link.href = canvas.toDataURL("image/png");
-    link.download = `career-compass-report-${currentReport?.id || "latest"}.png`;
-    link.click();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("长图生成失败"));
+        image.src = url;
+      });
+      const canvas = document.createElement("canvas");
+      canvas.width = width + 48;
+      canvas.height = height + 48;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("浏览器不支持长图导出");
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0);
+      const link = document.createElement("a");
+      link.href = canvas.toDataURL("image/png");
+      link.download = `career-compass-report-${currentReport?.id || "latest"}.png`;
+      link.click();
+    } catch (exception) {
+      setExportError(exception instanceof Error ? exception.message : "长图导出失败");
+    }
   }
 
   async function refreshTask() {
@@ -1500,7 +1599,17 @@ function ReportView({
               <strong>报告线程</strong>
               <span>{reportThreads.length} 份历史报告</span>
             </div>
+            <button className="primary-button full-width" onClick={() => onNavigate("workspace")}>
+              <Plus size={16} />
+              新建报告
+            </button>
             <div className="thread-list">
+              {task && task.status !== "已完成" && (
+                <button className="thread-item pending" onClick={refreshTask} disabled={taskBusy}>
+                  <span>报告 #{task.reportId} · {task.status}</span>
+                  <small>{taskMessage || task.message || "后台生成中"}</small>
+                </button>
+              )}
               {reportThreads.map((thread) => (
                 <button
                   key={thread.id}
@@ -1514,6 +1623,7 @@ function ReportView({
               ))}
               {reportThreads.length === 0 && <div className="empty-state compact-empty">暂无历史线程</div>}
             </div>
+            {threadError && <p className="form-error">{threadError}</p>}
           </aside>
           <div className="report-thread-main">
         <div ref={reportExportRef} className="report-export-area report-thread-message">
@@ -1608,6 +1718,7 @@ function ReportView({
         </>
       )}
         </div>
+        {exportError && <p className="form-error">{exportError}</p>}
       <section className="surface ai-chat">
         <SectionTitle icon={Bot} title="报告追问" />
         <div className="chat-history">
@@ -1629,6 +1740,7 @@ function ReportView({
             );
           })}
         </div>
+        {chatError && <p className="form-error">{chatError}</p>}
         <div className="chat-input">
           <input value={chatQuestion} onChange={(event) => setChatQuestion(event.target.value)} placeholder="围绕当前报告继续追问" />
           <button className="primary-button" title="发送" onClick={askReport} disabled={chatLoading || !currentReport}>
@@ -2972,19 +3084,21 @@ function AdminView() {
     setAdminNotice(`已解析 ${parsedRows.length} 行数据，可继续保存图表`);
   }
 
-  function importChartFile(file: File | null) {
+  async function importChartFile(file: File | null) {
     if (!file) return;
     const lowerName = file.name.toLowerCase();
-    if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const workbook = XLSX.read(reader.result, { type: "array" });
-        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json<Array<string | number>>(firstSheet, { header: 1, raw: false })
-          .map((row) => row.map((cell) => String(cell ?? "")));
+    if (lowerName.endsWith(".xlsx")) {
+      try {
+        const { readSheet } = await import("read-excel-file/browser");
+        const rows = (await readSheet(file)).map((row) => row.map((cell) => String(cell ?? "")));
         applyImportedChartRows(rows);
-      };
-      reader.readAsArrayBuffer(file);
+      } catch (exception) {
+        setAdminError(exception instanceof Error ? exception.message : "Excel 文件解析失败");
+      }
+      return;
+    }
+    if (lowerName.endsWith(".xls")) {
+      setAdminError("暂不支持旧版 .xls，请另存为 .xlsx 或 CSV 后导入");
       return;
     }
     const reader = new FileReader();
@@ -3759,7 +3873,7 @@ function AdminView() {
             </label>
             <label className="file-import-line">
               <span>导入 Excel/CSV</span>
-              <input type="file" accept=".xlsx,.xls,.csv,text/csv" onChange={(event) => {
+              <input type="file" accept=".xlsx,.csv,text/csv" onChange={(event) => {
                 importChartFile(event.target.files?.[0] || null);
                 event.target.value = "";
               }} />
@@ -4011,7 +4125,7 @@ function MeView({
       nickname: session.profile.nickname === "Compass 用户" ? "" : session.profile.nickname || ""
     });
     studentApi.reportHistory(session.token).then(setHistory).catch(() => undefined);
-    studentApi.favorites(session.token).then(setFavoriteItems).catch(() => undefined);
+    studentApi.favorites(session.token).then((items) => setFavoriteItems(visibleFavoriteItems(items))).catch(() => undefined);
     refreshCommunity(session.token).catch(() => undefined);
   }, [session?.token]);
 
