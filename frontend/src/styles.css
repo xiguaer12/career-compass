@@ -479,6 +479,17 @@ textarea:focus-visible {
   background: #eef6ff;
 }
 
+.inline-author-link {
+  min-height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .primary-button:disabled,
 .secondary-button:disabled,
 .icon-button:disabled {
@@ -572,6 +583,21 @@ textarea:focus-visible {
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 28px 90px rgba(15, 23, 42, 0.28);
   padding: 20px;
+}
+
+.report-modal {
+  width: min(520px, 100%);
+}
+
+.modal-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal-title-row .section-title {
+  margin: 0;
 }
 
 .register-auth-modal {
@@ -2450,6 +2476,28 @@ th {
   line-height: 1.28;
 }
 
+.profile-summary-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(92px, max-content));
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.profile-summary-grid > span {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.72);
+  font-weight: 700;
+}
+
+@media (max-width: 720px) {
+  .profile-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .post-editor {
   display: grid;
   gap: 12px;
@@ -2763,5 +2811,40 @@ th {
 
   .match-badge {
     align-self: flex-start;
+  }
+}
+
+@media print {
+  body {
+    background: #ffffff;
+  }
+
+  .app-header,
+  .top-nav-list,
+  .disclaimer,
+  .report-thread-sidebar,
+  .ai-chat,
+  .toast {
+    display: none !important;
+  }
+
+  .app-main,
+  .page-stack,
+  .report-thread-layout,
+  .report-thread-main,
+  .report-export-area {
+    display: block;
+    max-width: none;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  .surface,
+  .report-profile-box,
+  .plan-item,
+  .info-list {
+    break-inside: avoid;
+    box-shadow: none;
   }
 }

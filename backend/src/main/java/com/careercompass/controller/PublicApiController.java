@@ -128,6 +128,11 @@ public class PublicApiController {
     return ApiResponse.ok(service.charts());
   }
 
+  @GetMapping("/assessment/template")
+  public ApiResponse<Map<String, Object>> assessmentTemplate() {
+    return ApiResponse.ok(service.questionnaireTemplate());
+  }
+
   @GetMapping("/charts")
   public ApiResponse<List<ChartItem>> charts(
       @RequestParam(required = false) String path,
@@ -298,6 +303,14 @@ public class PublicApiController {
   @GetMapping("/community/posts/{id}/comments")
   public ApiResponse<List<CommunityComment>> comments(@PathVariable long id) {
     return ApiResponse.ok(service.comments(id));
+  }
+
+  @GetMapping("/community/users/{id}")
+  public ApiResponse<CommunityPublicProfile> communityUserProfile(
+      @RequestHeader(value = "Authorization", required = false) String authorization,
+      @PathVariable long id
+  ) {
+    return ApiResponse.ok(service.communityUserProfile(id, optionalStudentId(authorization)));
   }
 
   @PostMapping("/community/comments")

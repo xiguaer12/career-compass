@@ -269,7 +269,9 @@ VALUES
   ('questionnaire', 'QNR-2026.05', 'AI 开放访谈素材模板', '通过自然对话保留学生原始叙述、关键经历、价值排序、现实约束、情绪压力、资源条件、路径假设和仍需探索的问题，不要求固定问卷字段。', '已发布', current_timestamp),
   ('report_template', 'RPTTPL-2026.05', '开放式报告模板', '直接写一篇面向学生阅读的自然语言报告。可以使用小标题、段落、列表或 Markdown，自行组织学生画像、判断依据、不确定性、路径比较和下一步建议；需要自然解释系统动态评分和推荐排序。', '已发布', current_timestamp),
   ('prompt', 'PROMPT-2026.05', '报告生成提示词', '基于开放访谈素材和基础档案综合判断学生经历、动机、约束、情绪压力、资源条件和未说透的矛盾；结合考公、考研、就业三路径动态评分解释推荐排序；不承诺录取、上岸或就业结果。', '已发布', current_timestamp),
-  ('disclaimer', 'DISC-2026.05', 'AI 免责声明', 'AI 报告仅供辅助决策，不替代学生最终选择。', '已发布', current_timestamp)
+  ('disclaimer', 'DISC-2026.05', 'AI 免责声明', 'AI 报告仅供辅助决策，不替代学生最终选择。', '已发布', current_timestamp),
+  ('algorithm_weights', 'WEIGHT-2026.06', '三路径匹配权重', '{"weights":{"profileFit":35,"interviewSignals":30,"constraints":20,"dataEvidence":15}}', '已发布', current_timestamp),
+  ('model_params', 'MODEL-2026.06', '大模型调用参数', '{"temperature":0.7,"topP":0.9,"maxTokens":4000}', '已发布', current_timestamp)
 ON DUPLICATE KEY UPDATE
   title = VALUES(title),
   content = VALUES(content),

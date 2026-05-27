@@ -8,6 +8,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -33,9 +34,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
@@ -53,6 +59,9 @@ public class CompassService {
   private static final String POSTGRADUATE_SOURCE_URL = "https://news.cctv.cn/2025/11/24/ARTINT5iuLLp0mtEfdDd7Kkl251124.shtml";
   private static final String CIVIL_EXAM_SOURCE_URL = "https://www.gov.cn/lianbo/bumen/202510/content_7045734.htm";
   private static final int MAX_COMMUNITY_IMAGES = 3;
+  private static final List<String> CHART_IMPORT_COLORS = List.of(
+      "#2563eb", "#0f766e", "#b45309", "#be123c", "#6d28d9", "#0284c7"
+  );
   private static final Map<String, List<String>> USST_COLLEGE_MAJORS = Map.ofEntries(
       Map.entry("能源与动力工程学院", List.of("过程装备与控制工程", "能源与动力工程", "新能源科学与工程", "储能科学与工程")),
       Map.entry("光电信息与计算机工程学院", List.of("测控技术与仪器", "电子信息工程", "电子科学与技术", "通信工程", "光电信息科学与工程", "自动化", "计算机科学与技术", "智能科学与技术", "数据科学与大数据技术")),
@@ -102,6 +111,7 @@ public class CompassService {
   private final int chartAutoRefreshIntervalMinutes;
   private final Path communityUploadDir;
   private final long communityUploadMaxBytes;
+  private final StringRedisTemplate redisTemplate;
 
   public CompassService(
       @Value("${app.student-email-pattern:^\\d{10}@st\\.usst\\.edu\\.cn$}") String studentEmailPattern,
@@ -117,7 +127,8 @@ public class CompassService {
       ObjectMapper objectMapper,
       SecurityService security,
       LlmClient llmClient,
-      EmailVerificationService emailVerificationService
+      EmailVerificationService emailVerificationService,
+      ObjectProvider<StringRedisTemplate> redisTemplateProvider
   ) {
     this.studentEmailPattern = Pattern.compile(studentEmailPattern, Pattern.CASE_INSENSITIVE);
     this.autoCrawlEnabled = autoCrawlEnabled;
@@ -133,6 +144,7 @@ public class CompassService {
     this.security = security;
     this.llmClient = llmClient;
     this.emailVerificationService = emailVerificationService;
+    this.redisTemplate = redisTemplateProvider.getIfAvailable();
   }
 
   @PostConstruct
@@ -171,6 +183,7 @@ public class CompassService {
     addColumn("admin_account", "locked_until TIMESTAMP NULL");
     addColumn("data_source", "parser_rule_json JSON");
     addColumn("crawl_candidate", "task_id BIGINT NULL");
+    ensureSrsIndexes();
     repairSeedData();
     recoverInterruptedCrawlTasks();
     startAutoCrawlScheduler();
@@ -657,7 +670,9 @@ public class CompassService {
   public QuestionnaireDraft saveDraft(AuthUser user, AssessmentRequest request) {
     ensureQuestionnaireAllowed(user);
     Map<String, Object> answers = openAssessmentAnswers(request == null || request.answers() == null ? Map.of() : request.answers());
-    String version = StringUtils.hasText(request == null ? null : request.questionnaireVersion()) ? request.questionnaireVersion() : QUESTIONNAIRE_VERSION;
+    String version = StringUtils.hasText(request == null ? null : request.questionnaireVersion())
+        ? request.questionnaireVersion()
+        : latestAiConfigVersion("questionnaire", QUESTIONNAIRE_VERSION);
     String stepKey = valueOr(request == null ? null : request.stepKey(), "profile");
     int percent = clamp(request == null || request.completionPercent() == null ? 0 : request.completionPercent());
     List<Long> draftIds = jdbc.query(
@@ -733,7 +748,7 @@ public class CompassService {
     Map<String, Object> persistedAnswers = new LinkedHashMap<>(response.answers() == null ? Map.of() : response.answers());
     persistedAnswers.put("sourceMessages", interviewTranscript(messages, response.assistantMessage()));
     saveDraft(user, new AssessmentRequest(
-        QUESTIONNAIRE_VERSION,
+        latestAiConfigVersion("questionnaire", QUESTIONNAIRE_VERSION),
         persistedAnswers,
         "ai-interview",
         response.completionPercent()
@@ -751,10 +766,12 @@ public class CompassService {
 
   public ReportTask submitAssessment(AuthUser user, AssessmentRequest request) {
     ensureQuestionnaireAllowed(user);
-    ensureLlmAvailable();
     Map<String, Object> answers = openAssessmentAnswers(request == null || request.answers() == null ? latestDraft(user).map(QuestionnaireDraft::answers).orElse(Map.of()) : request.answers());
     validateAssessment(answers);
-    String version = StringUtils.hasText(request == null ? null : request.questionnaireVersion()) ? request.questionnaireVersion() : QUESTIONNAIRE_VERSION;
+    ensureLlmAvailable();
+    String version = StringUtils.hasText(request == null ? null : request.questionnaireVersion())
+        ? request.questionnaireVersion()
+        : latestAiConfigVersion("questionnaire", QUESTIONNAIRE_VERSION);
     KeyHolder questionnaireKey = new GeneratedKeyHolder();
     jdbc.update(connection -> {
       PreparedStatement statement = connection.prepareStatement(
@@ -926,6 +943,47 @@ public class CompassService {
         type
     );
     return rows.isEmpty() || !StringUtils.hasText(rows.getFirst()) ? fallback : rows.getFirst();
+  }
+
+  private String latestAiConfigVersion(String type, String fallback) {
+    List<String> rows = jdbc.query(
+        """
+        select version
+        from ai_config
+        where config_type = ? and status = '已发布'
+        order by published_at desc, created_at desc, id desc
+        limit 1
+        """,
+        (rs, rowNum) -> rs.getString("version"),
+        type
+    );
+    return rows.isEmpty() || !StringUtils.hasText(rows.getFirst()) ? fallback : rows.getFirst();
+  }
+
+  public Map<String, Object> questionnaireTemplate() {
+    List<Map<String, Object>> rows = jdbc.queryForList(
+        """
+        select version, title, content, published_at
+        from ai_config
+        where config_type = 'questionnaire' and status = '已发布'
+        order by published_at desc, created_at desc, id desc
+        limit 1
+        """
+    );
+    if (rows.isEmpty()) {
+      return Map.of(
+          "version", QUESTIONNAIRE_VERSION,
+          "title", "开放访谈素材模板",
+          "content", "围绕学生原始叙述、关键经历、价值取向、现实约束、情绪压力、资源条件、路径假设和未说透的矛盾进行开放整理。"
+      );
+    }
+    Map<String, Object> row = rows.getFirst();
+    return Map.of(
+        "version", valueOr(String.valueOf(row.get("version")), QUESTIONNAIRE_VERSION),
+        "title", valueOr(String.valueOf(row.get("title")), "开放访谈素材模板"),
+        "content", valueOr(String.valueOf(row.get("content")), ""),
+        "publishedAt", toInstantString((Timestamp) row.get("published_at"))
+    );
   }
 
   public List<ReportHistoryItem> reportHistory(AuthUser user) {
@@ -1182,6 +1240,7 @@ public class CompassService {
     if (request == null || !StringUtils.hasText(request.body())) {
       throw new IllegalArgumentException("评论内容不能为空");
     }
+    validateCommunityContent(request.body());
     CommunityPost post = communityPost(request.postId()).orElseThrow(() -> new IllegalArgumentException("帖子不存在"));
     if (!"已通过".equals(post.status())) {
       throw new IllegalArgumentException("仅已通过内容可回复");
@@ -1281,8 +1340,10 @@ public class CompassService {
     if (request == null || request.id() <= 0 || !StringUtils.hasText(request.status())) {
       throw new IllegalArgumentException("评论审核状态不能为空");
     }
-    int updated = jdbc.update("update community_comment set status = ?, updated_at = current_timestamp where id = ?", request.status(), request.id());
-    if (updated == 0) throw new IllegalArgumentException("评论不存在");
+    int updated = StringUtils.hasText(request.expectedStatus())
+        ? jdbc.update("update community_comment set status = ?, updated_at = current_timestamp where id = ? and status = ?", request.status(), request.id(), request.expectedStatus())
+        : jdbc.update("update community_comment set status = ?, updated_at = current_timestamp where id = ?", request.status(), request.id());
+    if (updated == 0) throwReviewConflictIfExists("community_comment", request.id(), request.expectedStatus(), "评论不存在");
     audit("admin", "UPDATE_COMMENT_STATUS", "community_comment", String.valueOf(request.id()), Map.of("status", request.status(), "reason", valueOr(request.reason(), "")));
     return Map.of("id", request.id(), "status", request.status());
   }
@@ -1314,10 +1375,16 @@ public class CompassService {
 
   public Map<String, Object> reportAbuse(AuthUser user, ReportAbuseRequest request) {
     requireCompletedStudent(user);
-    if (request == null || !StringUtils.hasText(request.reason())) {
+    if (request == null || request.targetId() <= 0 || !StringUtils.hasText(request.reason())) {
       throw new IllegalArgumentException("举报原因不能为空");
     }
-    String targetType = valueOr(request.targetType(), "post");
+    String targetType = valueOr(request.targetType(), "post").trim().toLowerCase(Locale.ROOT);
+    if (!List.of("post", "comment").contains(targetType)) {
+      throw new IllegalArgumentException("举报对象类型不支持");
+    }
+    if (!reportTargetExists(targetType, request.targetId())) {
+      throw new IllegalArgumentException("举报对象不存在或暂不可举报");
+    }
     Integer existing = jdbc.queryForObject(
         "select count(*) from abuse_report where reporter_student_id = ? and target_type = ? and target_id = ?",
         Integer.class,
@@ -1337,6 +1404,25 @@ public class CompassService {
     );
     audit("student:" + user.email(), "REPORT_ABUSE", targetType, String.valueOf(request.targetId()), Map.of("reason", request.reason()));
     return Map.of("targetId", request.targetId(), "targetType", targetType, "status", "待处理");
+  }
+
+  private boolean reportTargetExists(String targetType, long targetId) {
+    Integer count = "comment".equals(targetType)
+        ? jdbc.queryForObject(
+            """
+            select count(*)
+            from community_comment c join community_post p on p.id = c.post_id
+            where c.id = ? and c.status = '已通过' and p.status = '已通过' and p.deleted_at is null
+            """,
+            Integer.class,
+            targetId
+        )
+        : jdbc.queryForObject(
+            "select count(*) from community_post where id = ? and status = '已通过' and deleted_at is null",
+            Integer.class,
+            targetId
+        );
+    return count != null && count > 0;
   }
 
   public Map<String, Object> userCommunity(AuthUser user) {
@@ -1370,6 +1456,49 @@ public class CompassService {
         user.id()
     );
     return Map.of("posts", ownPosts, "favorites", favorites);
+  }
+
+  public CommunityPublicProfile communityUserProfile(long studentId, Long viewerStudentId) {
+    List<Map<String, Object>> users = jdbc.queryForList(
+        """
+        select id, coalesce(nickname, name, '未命名用户') as display_name, created_at
+        from student_account
+        where id = ?
+        """,
+        studentId
+    );
+    if (users.isEmpty()) throw new IllegalArgumentException("用户不存在");
+    int visiblePosts = countSql("select count(*) from community_post where student_id = ? and anonymous = 0 and status = '已通过' and deleted_at is null", studentId);
+    if (visiblePosts == 0) {
+      throw new IllegalArgumentException("该用户暂无公开主页");
+    }
+    int visibleComments = countSql(
+        """
+        select count(*)
+        from community_comment c join community_post p on p.id = c.post_id
+        where c.student_id = ? and c.status = '已通过' and p.status = '已通过' and p.deleted_at is null
+        """,
+        studentId
+    );
+    Number likes = jdbc.queryForObject(
+        "select coalesce(sum(likes), 0) from community_post where student_id = ? and anonymous = 0 and status = '已通过' and deleted_at is null",
+        Number.class,
+        studentId
+    );
+    List<CommunityPost> recentPosts = queryCommunityPosts(false, null, null, null, "latest", viewerStudentId).stream()
+        .filter(post -> post.authorId() != null && post.authorId() == studentId)
+        .limit(20)
+        .toList();
+    Map<String, Object> user = users.getFirst();
+    return new CommunityPublicProfile(
+        studentId,
+        String.valueOf(user.get("display_name")),
+        toInstantString((Timestamp) user.get("created_at")),
+        visiblePosts,
+        visibleComments,
+        likes == null ? 0 : likes.intValue(),
+        recentPosts
+    );
   }
 
   public List<MessageItem> messages(AuthUser user) {
@@ -1577,6 +1706,10 @@ public class CompassService {
     );
     if (rows.isEmpty()) throw new IllegalArgumentException("抓取候选不存在");
     Map<String, Object> row = rows.getFirst();
+    String currentStatus = String.valueOf(row.get("review_status"));
+    if (StringUtils.hasText(request.expectedStatus()) && !request.expectedStatus().equals(currentStatus)) {
+      throw new IllegalArgumentException("记录状态已变化，请刷新后再操作");
+    }
     Map<String, Object> parsed = jsonToMap(String.valueOf(row.get("parsed_json")));
     String action = request.action().trim();
     boolean rejectAction = "驳回".equals(action) || "已驳回".equals(action) || "reject".equalsIgnoreCase(action);
@@ -1722,6 +1855,11 @@ public class CompassService {
   }
 
   public List<ChartItem> publicCharts(String path, String college, String major, String graduationYear) {
+    String cacheKey = chartCacheKey(path, college, major, graduationYear);
+    Optional<List<ChartItem>> cached = readChartCache(cacheKey);
+    if (cached.isPresent()) {
+      return cached.get();
+    }
     StringBuilder sql = new StringBuilder("select * from chart_info where status = '已发布' and visibility = '公开'");
     List<Object> params = new ArrayList<>();
     if (StringUtils.hasText(path) && !"全部".equals(path)) {
@@ -1729,9 +1867,11 @@ public class CompassService {
       params.add(path);
     }
     sql.append(" order by display_position asc, updated_at desc");
-    return jdbc.query(sql.toString(), (rs, rowNum) -> mapChart(rs), params.toArray()).stream()
+    List<ChartItem> charts = jdbc.query(sql.toString(), (rs, rowNum) -> mapChart(rs), params.toArray()).stream()
         .filter(chart -> chartMatchesFilters(chart, college, major, graduationYear))
         .toList();
+    writeChartCache(cacheKey, charts);
+    return charts;
   }
 
   public Map<String, Object> saveChart(ChartSaveRequest request) {
@@ -1765,6 +1905,7 @@ public class CompassService {
           request.id()
       );
       audit("admin", "SAVE_CHART", "chart_info", String.valueOf(request.id()), Map.of("title", request.title(), "status", status));
+      evictChartCache();
       return Map.of("id", request.id(), "status", "已保存");
     }
     KeyHolder keyHolder = new GeneratedKeyHolder();
@@ -1792,7 +1933,38 @@ public class CompassService {
     }, keyHolder);
     long id = keyHolder.getKey().longValue();
     audit("admin", "CREATE_CHART", "chart_info", String.valueOf(id), Map.of("title", request.title(), "status", status));
+    evictChartCache();
     return Map.of("id", id, "status", "已保存");
+  }
+
+  public ChartImportResult importChart(MultipartFile file) {
+    if (file == null || file.isEmpty()) {
+      throw new IllegalArgumentException("导入文件不能为空");
+    }
+    String filename = valueOr(file.getOriginalFilename(), "chart.csv").toLowerCase(Locale.ROOT);
+    try {
+      List<List<String>> rows;
+      if (filename.endsWith(".xlsx")) {
+        rows = parseXlsxRows(file);
+      } else if (filename.endsWith(".csv")) {
+        rows = parseCsvRows(new String(file.getBytes(), StandardCharsets.UTF_8));
+      } else if (filename.endsWith(".xls")) {
+        throw new IllegalArgumentException("暂不支持旧版 .xls，请另存为 .xlsx 或 CSV 后导入");
+      } else {
+        throw new IllegalArgumentException("仅支持 .csv 或 .xlsx 图表数据文件");
+      }
+      ChartImportResult result = buildChartImportResult(rows);
+      audit("admin", "IMPORT_CHART_FILE", "chart_info", "draft", Map.of(
+          "fileName", valueOr(file.getOriginalFilename(), ""),
+          "importedRows", result.importedRows(),
+          "errors", result.errors().size()
+      ));
+      return result;
+    } catch (IllegalArgumentException exception) {
+      throw exception;
+    } catch (Exception exception) {
+      throw new IllegalArgumentException("导入文件解析失败：" + valueOr(exception.getMessage(), "请检查文件格式"));
+    }
   }
 
   public List<TagItem> tags(String type, boolean admin) {
@@ -1872,6 +2044,7 @@ public class CompassService {
         || !StringUtils.hasText(request.title()) || !StringUtils.hasText(request.content())) {
       throw new IllegalArgumentException("AI 配置类型、版本、标题和内容不能为空");
     }
+    validateAiConfig(request);
     String status = valueOr(request.status(), "草稿");
     if (request.id() != null) {
       jdbc.update(
@@ -1914,6 +2087,82 @@ public class CompassService {
     return Map.of("id", id, "status", "已保存");
   }
 
+  private void validateAiConfig(AiConfigSaveRequest request) {
+    String type = request.configType().trim().toLowerCase(Locale.ROOT);
+    if ("algorithm_weights".equals(type) || "weights".equals(type) || "matching_weights".equals(type)) {
+      Map<String, Object> payload = parseAiConfigJson(request.content(), "算法权重配置必须是 JSON 对象");
+      Object weightsRaw = payload.getOrDefault("weights", payload);
+      if (!(weightsRaw instanceof Map<?, ?> weights) || weights.isEmpty()) {
+        throw new IllegalArgumentException("算法权重配置必须包含 weights 对象");
+      }
+      double total = 0;
+      for (Map.Entry<?, ?> entry : weights.entrySet()) {
+        String key = String.valueOf(entry.getKey());
+        if (!StringUtils.hasText(key)) {
+          throw new IllegalArgumentException("算法权重名称不能为空");
+        }
+        double value = doubleFromObject(entry.getValue());
+        if (value <= 0 || value > 100) {
+          throw new IllegalArgumentException("算法权重 " + key + " 必须大于 0 且不超过 100");
+        }
+        total += value;
+      }
+      if (Math.abs(total - 100D) > 0.01D) {
+        throw new IllegalArgumentException("算法权重总和必须等于 100%，当前为 " + Math.round(total * 100D) / 100D + "%");
+      }
+      return;
+    }
+    if ("model_params".equals(type) || "model_parameters".equals(type)) {
+      Map<String, Object> payload = parseAiConfigJson(request.content(), "模型参数配置必须是 JSON 对象");
+      validateOptionalRange(payload, "temperature", 0D, 2D);
+      validateOptionalRange(payload, "topP", 0D, 1D);
+      validateOptionalRange(payload, "top_p", 0D, 1D);
+      if (payload.containsKey("maxTokens") || payload.containsKey("max_tokens")) {
+        int maxTokens = intFromObject(payload.getOrDefault("maxTokens", payload.get("max_tokens")), -1);
+        if (maxTokens < 256 || maxTokens > 16000) {
+          throw new IllegalArgumentException("maxTokens 必须在 256 到 16000 之间");
+        }
+      }
+    }
+  }
+
+  private Map<String, Object> parseAiConfigJson(String content, String message) {
+    try {
+      Map<String, Object> payload = objectMapper.readValue(content, new TypeReference<>() {});
+      if (payload == null || payload.isEmpty()) {
+        throw new IllegalArgumentException(message);
+      }
+      return payload;
+    } catch (IllegalArgumentException exception) {
+      throw exception;
+    } catch (Exception exception) {
+      throw new IllegalArgumentException(message);
+    }
+  }
+
+  private void validateOptionalRange(Map<String, Object> payload, String key, double min, double max) {
+    if (!payload.containsKey(key)) return;
+    double value = doubleFromObject(payload.get(key));
+    if (value < min || value > max) {
+      throw new IllegalArgumentException(key + " 必须在 " + min + " 到 " + max + " 之间");
+    }
+  }
+
+  private void throwReviewConflictIfExists(String table, long id, String expectedStatus, String notFoundMessage) {
+    String sql = switch (table) {
+      case "community_post" -> "select count(*) from community_post where id = ?";
+      case "community_comment" -> "select count(*) from community_comment where id = ?";
+      case "abuse_report" -> "select count(*) from abuse_report where id = ?";
+      case "crawl_candidate" -> "select count(*) from crawl_candidate where id = ?";
+      default -> throw new IllegalArgumentException(notFoundMessage);
+    };
+    Integer existing = jdbc.queryForObject(sql, Integer.class, id);
+    if (existing != null && existing > 0 && StringUtils.hasText(expectedStatus)) {
+      throw new IllegalArgumentException("记录状态已变化，请刷新后再操作");
+    }
+    throw new IllegalArgumentException(notFoundMessage);
+  }
+
   public List<AbuseReportItem> abuseReports(String status) {
     StringBuilder sql = new StringBuilder("select * from abuse_report where 1 = 1");
     List<Object> params = new ArrayList<>();
@@ -1940,12 +2189,21 @@ public class CompassService {
     if (request == null || request.id() <= 0 || !StringUtils.hasText(request.status())) {
       throw new IllegalArgumentException("举报处理状态不能为空");
     }
-    jdbc.update(
-        "update abuse_report set status = ?, handled_by = 'admin', handled_result = ?, handled_at = current_timestamp where id = ?",
-        request.status(),
-        valueOr(request.reason(), request.status()),
-        request.id()
-    );
+    int updated = StringUtils.hasText(request.expectedStatus())
+        ? jdbc.update(
+            "update abuse_report set status = ?, handled_by = 'admin', handled_result = ?, handled_at = current_timestamp where id = ? and status = ?",
+            request.status(),
+            valueOr(request.reason(), request.status()),
+            request.id(),
+            request.expectedStatus()
+        )
+        : jdbc.update(
+            "update abuse_report set status = ?, handled_by = 'admin', handled_result = ?, handled_at = current_timestamp where id = ?",
+            request.status(),
+            valueOr(request.reason(), request.status()),
+            request.id()
+        );
+    if (updated == 0) throwReviewConflictIfExists("abuse_report", request.id(), request.expectedStatus(), "举报不存在");
     audit("admin", "HANDLE_ABUSE", "abuse_report", String.valueOf(request.id()), Map.of("status", request.status(), "result", valueOr(request.reason(), "")));
     return Map.of("id", request.id(), "status", request.status());
   }
@@ -1967,7 +2225,10 @@ public class CompassService {
       if (("已驳回".equals(status) || "已下架".equals(status)) && !StringUtils.hasText(request.reason())) {
         throw new IllegalArgumentException("驳回或下架必须填写处置原因");
       }
-      jdbc.update("update community_post set status = ?, reject_reason = ?, updated_at = current_timestamp where id = ?", status, request.reason(), request.id());
+      int updated = StringUtils.hasText(request.expectedStatus())
+          ? jdbc.update("update community_post set status = ?, reject_reason = ?, updated_at = current_timestamp where id = ? and status = ?", status, request.reason(), request.id(), request.expectedStatus())
+          : jdbc.update("update community_post set status = ?, reject_reason = ?, updated_at = current_timestamp where id = ?", status, request.reason(), request.id());
+      if (updated == 0) throwReviewConflictIfExists("community_post", request.id(), request.expectedStatus(), "帖子不存在");
       createMessage(findPostAuthor(request.id()), "审核", "社区内容审核结果", "你的社区内容状态已更新为：" + status + (StringUtils.hasText(request.reason()) ? "，原因：" + request.reason() : ""), "/community");
     }
     audit("admin", "UPDATE_POST_STATUS", "community_post", String.valueOf(request.id()), Map.of("status", status, "reason", valueOr(request.reason(), "")));
@@ -1985,18 +2246,43 @@ public class CompassService {
     String status = request.status();
     Timestamp mutedUntil = "禁言中".equals(status) ? Timestamp.from(Instant.now().plus(Duration.ofDays(7))) : null;
     Timestamp bannedUntil = "封禁中".equals(status) ? Timestamp.from(Instant.now().plus(Duration.ofDays(30))) : null;
-    jdbc.update(
-        """
-        update student_account
-        set status = ?, punishment_reason = ?, muted_until = ?, banned_until = ?
-        where id = ?
-        """,
-        status,
-        valueOr(request.reason(), "后台用户处罚"),
-        mutedUntil,
-        bannedUntil,
-        request.id()
-    );
+    String reason = valueOr(request.reason(), "后台用户处罚");
+    boolean released = List.of("正常", "已完成引导").contains(status);
+    int updated = StringUtils.hasText(request.expectedStatus())
+        ? jdbc.update(
+            """
+            update student_account
+            set status = ?,
+                punishment_reason = ?,
+                muted_until = ?,
+                banned_until = ?
+            where id = ? and status = ?
+            """,
+            status,
+            released ? null : reason,
+            released ? null : mutedUntil,
+            released ? null : bannedUntil,
+            request.id(),
+            request.expectedStatus()
+        )
+        : jdbc.update(
+            """
+            update student_account
+            set status = ?,
+                punishment_reason = ?,
+                muted_until = ?,
+                banned_until = ?
+            where id = ?
+            """,
+            status,
+            released ? null : reason,
+            released ? null : mutedUntil,
+            released ? null : bannedUntil,
+            request.id()
+        );
+    if (updated == 0) {
+      throwUserConflictIfExists(request.id(), request.expectedStatus());
+    }
     audit("admin", "UPDATE_USER_STATUS", "student_account", String.valueOf(request.id()), Map.of("status", request.status(), "reason", valueOr(request.reason(), "")));
     createMessage(request.id(), "账号", "账号状态已更新", "你的账号状态已更新为：" + request.status(), "/me");
     return Map.of("userId", request.id(), "status", request.status(), "updatedAt", Instant.now().toString());
@@ -2205,6 +2491,7 @@ public class CompassService {
           "updated", updated,
           "message", trimText(message, 500)
       ));
+      evictChartCache();
       return Map.of("status", "已完成", "updatedCount", updated, "message", trimText(message, 500), "updatedAt", Instant.now().toString());
     } catch (Exception exception) {
       String message = trimText(exception.getMessage() == null ? "官方图表刷新失败" : exception.getMessage(), 480);
@@ -2893,6 +3180,15 @@ public class CompassService {
         """);
   }
 
+  private void ensureSrsIndexes() {
+    addIndex("community_post", "idx_post_status_created", "(status, created_at)");
+    addIndex("community_post", "idx_post_type_status_created", "(type, status, created_at)");
+    addIndex("community_comment", "idx_comment_student_created", "(student_id, created_at)");
+    addIndex("community_comment", "idx_comment_status_created", "(status, created_at)");
+    addIndex("abuse_report", "idx_abuse_reporter_created", "(reporter_student_id, created_at)");
+    addIndex("abuse_report", "idx_abuse_target_status", "(target_type, target_id, status)");
+  }
+
   private void repairSeedData() {
     execute("set names utf8mb4");
     jdbc.update(
@@ -3120,6 +3416,8 @@ public class CompassService {
     seedAiConfig("report_template", TEMPLATE_VERSION, "开放式报告模板", "基于学生开放访谈素材直接写一篇完整自然语言报告。可以比较考公、考研、就业，也可以按学生真实情况自由组织判断，并自然解释系统动态评分和推荐排序。", "已发布");
     seedAiConfig("prompt", PROMPT_VERSION, "报告生成提示词", "像读完访谈记录的咨询老师一样综合判断学生经历、动机、约束、情绪压力、资源条件和未说透的矛盾；结合考公、考研、就业三路径动态评分解释推荐排序；报告只供辅助决策，不输出录取、上岸、就业结果承诺。", "已发布");
     seedAiConfig("disclaimer", "DISC-2026.05", "AI 免责声明", "AI 报告仅供辅助决策，不替代学生最终选择。", "已发布");
+    seedAiConfig("algorithm_weights", "WEIGHT-2026.06", "三路径匹配权重", "{\"weights\":{\"profileFit\":35,\"interviewSignals\":30,\"constraints\":20,\"dataEvidence\":15}}", "已发布");
+    seedAiConfig("model_params", "MODEL-2026.06", "大模型调用参数", "{\"temperature\":0.7,\"topP\":0.9,\"maxTokens\":4000}", "已发布");
   }
 
   private void seedContent(long id, String title, String category, String summary, String source, String url) {
@@ -3424,6 +3722,7 @@ public class CompassService {
         rs.getString("body"),
         rs.getString("type"),
         rs.getString("path"),
+        rs.getBoolean("anonymous") ? null : nullableLong(rs, "student_id"),
         rs.getString("author_name"),
         rs.getBoolean("anonymous"),
         rs.getString("status"),
@@ -3867,7 +4166,7 @@ public class CompassService {
 
   private void validateAssessment(Map<String, Object> answers) {
     if (answers == null || answers.isEmpty() || answers.values().stream().noneMatch(this::hasMeaningfulAnswerValue)) {
-      throw new IllegalArgumentException("访谈素材为空，请先完成 AI 访谈");
+      throw new IllegalArgumentException("请先完成职业评估问卷");
     }
   }
 
@@ -3911,10 +4210,21 @@ public class CompassService {
     if (!StringUtils.hasText(request.body()) || request.body().length() < 10) {
       throw new IllegalArgumentException("正文长度至少 10 个字符");
     }
-    String text = request.title() + request.body();
-    if (List.of("代考", "包过", "广告").stream().anyMatch(text::contains)) {
+    validateCommunityContent(request.title() + request.body());
+  }
+
+  private void validateCommunityContent(String text) {
+    if (List.of("代考", "包过", "广告", "赌博", "诈骗", "买卖答案", "加微信", "刷单", "人身攻击").stream().anyMatch(text::contains)) {
       throw new IllegalArgumentException("内容命中敏感词规则，请调整后重新提交");
     }
+  }
+
+  private void throwUserConflictIfExists(long id, String expectedStatus) {
+    Integer existing = jdbc.queryForObject("select count(*) from student_account where id = ?", Integer.class, id);
+    if (existing != null && existing > 0 && StringUtils.hasText(expectedStatus)) {
+      throw new IllegalArgumentException("记录状态已变化，请刷新后再操作");
+    }
+    throw new IllegalArgumentException("用户不存在");
   }
 
   private List<String> normalizePostImages(List<String> imageUrls) {
@@ -4169,6 +4479,11 @@ public class CompassService {
     return value == null ? 0 : value;
   }
 
+  private int countSql(String sql, Object... args) {
+    Integer value = jdbc.queryForObject(sql, Integer.class, args);
+    return value == null ? 0 : value;
+  }
+
   private String normalizePathKey(String key) {
     if (!StringUtils.hasText(key)) return "employment";
     return switch (key.toLowerCase(Locale.ROOT)) {
@@ -4298,6 +4613,46 @@ public class CompassService {
         && matchesChartFilter(chart.filters(), "graduationYear", graduationYear);
   }
 
+  private String chartCacheKey(String path, String college, String major, String graduationYear) {
+    return "career-compass:charts:"
+        + valueOr(path, "all") + ":"
+        + valueOr(college, "all") + ":"
+        + valueOr(major, "all") + ":"
+        + valueOr(graduationYear, "all");
+  }
+
+  private Optional<List<ChartItem>> readChartCache(String key) {
+    if (redisTemplate == null) return Optional.empty();
+    try {
+      String json = redisTemplate.opsForValue().get(key);
+      if (!StringUtils.hasText(json)) return Optional.empty();
+      return Optional.of(objectMapper.readValue(json, new TypeReference<List<ChartItem>>() {}));
+    } catch (Exception ignored) {
+      return Optional.empty();
+    }
+  }
+
+  private void writeChartCache(String key, List<ChartItem> charts) {
+    if (redisTemplate == null) return;
+    try {
+      redisTemplate.opsForValue().set(key, toJson(charts), 10, TimeUnit.MINUTES);
+    } catch (Exception ignored) {
+      // Redis is an acceleration layer only; database reads remain authoritative.
+    }
+  }
+
+  private void evictChartCache() {
+    if (redisTemplate == null) return;
+    try {
+      var keys = redisTemplate.keys("career-compass:charts:*");
+      if (keys != null && !keys.isEmpty()) {
+        redisTemplate.delete(keys);
+      }
+    } catch (Exception ignored) {
+      // Cache invalidation failure must not block chart saves or refreshes.
+    }
+  }
+
   private boolean matchesChartFilter(Map<String, Object> filters, String key, String requested) {
     if (!StringUtils.hasText(requested)) return true;
     if (filters == null || !filters.containsKey(key)) return true;
@@ -4324,6 +4679,229 @@ public class CompassService {
     return false;
   }
 
+  private ChartImportResult buildChartImportResult(List<List<String>> rawRows) {
+    List<List<String>> rows = rawRows == null ? List.of() : rawRows.stream()
+        .map(this::trimTrailingEmptyCells)
+        .filter(row -> row.stream().anyMatch(StringUtils::hasText))
+        .toList();
+    List<ChartImportError> errors = new ArrayList<>();
+    if (rows.size() < 2) {
+      errors.add(new ChartImportError(1, "导入文件至少需要表头和一行数据"));
+      return new ChartImportResult(0, Map.of(), errors);
+    }
+
+    List<String> headers = rows.getFirst().stream().map(String::trim).toList();
+    if (headers.isEmpty() || !StringUtils.hasText(headers.getFirst())) {
+      errors.add(new ChartImportError(1, "第一列表头不能为空，它会作为图表横轴字段"));
+    }
+    for (int index = 1; index < headers.size(); index++) {
+      if (!StringUtils.hasText(headers.get(index))) {
+        errors.add(new ChartImportError(1, "第 " + (index + 1) + " 列表头不能为空"));
+      }
+    }
+    if (headers.size() < 2) {
+      errors.add(new ChartImportError(1, "至少需要一个数值列作为图表系列"));
+    }
+
+    String xKey = headers.isEmpty() ? "label" : headers.getFirst();
+    List<Map<String, Object>> parsedRows = new ArrayList<>();
+    for (int rowIndex = 1; rowIndex < rows.size(); rowIndex++) {
+      List<String> row = rows.get(rowIndex);
+      int displayRow = rowIndex + 1;
+      if (row.isEmpty() || !StringUtils.hasText(cellAt(row, 0))) {
+        errors.add(new ChartImportError(displayRow, "第一列不能为空"));
+        continue;
+      }
+      Map<String, Object> parsed = new LinkedHashMap<>();
+      parsed.put(xKey, cellAt(row, 0).trim());
+      for (int column = 1; column < headers.size(); column++) {
+        String value = cellAt(row, column).trim();
+        if (!StringUtils.hasText(value)) {
+          errors.add(new ChartImportError(displayRow, headers.get(column) + " 不能为空"));
+          continue;
+        }
+        Optional<Double> numeric = parseNumber(value);
+        if (numeric.isEmpty()) {
+          errors.add(new ChartImportError(displayRow, headers.get(column) + " 必须是数字"));
+          continue;
+        }
+        parsed.put(headers.get(column), numeric.get());
+      }
+      parsedRows.add(parsed);
+    }
+    if (parsedRows.isEmpty() && errors.isEmpty()) {
+      errors.add(new ChartImportError(2, "没有可导入的数据行"));
+    }
+    if (!errors.isEmpty()) {
+      return new ChartImportResult(0, Map.of(), errors);
+    }
+
+    List<Map<String, Object>> series = new ArrayList<>();
+    for (int index = 1; index < headers.size(); index++) {
+      String key = headers.get(index);
+      series.add(Map.of(
+          "key", key,
+          "name", key,
+          "color", CHART_IMPORT_COLORS.get((index - 1) % CHART_IMPORT_COLORS.size())
+      ));
+    }
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("xKey", xKey);
+    data.put("series", series);
+    data.put("rows", parsedRows);
+    return new ChartImportResult(parsedRows.size(), data, List.of());
+  }
+
+  private List<String> trimTrailingEmptyCells(List<String> row) {
+    if (row == null) return List.of();
+    int end = row.size();
+    while (end > 0 && !StringUtils.hasText(row.get(end - 1))) {
+      end--;
+    }
+    return row.subList(0, end).stream().map(value -> value == null ? "" : value.trim()).toList();
+  }
+
+  private String cellAt(List<String> row, int index) {
+    return index >= 0 && index < row.size() && row.get(index) != null ? row.get(index) : "";
+  }
+
+  private Optional<Double> parseNumber(String value) {
+    try {
+      return Optional.of(Double.parseDouble(value.replace(",", "")));
+    } catch (Exception ignored) {
+      return Optional.empty();
+    }
+  }
+
+  private List<List<String>> parseCsvRows(String text) {
+    List<List<String>> rows = new ArrayList<>();
+    List<String> row = new ArrayList<>();
+    StringBuilder current = new StringBuilder();
+    boolean quoted = false;
+    String value = text == null ? "" : text.replace("\uFEFF", "");
+    for (int index = 0; index < value.length(); index++) {
+      char ch = value.charAt(index);
+      char next = index + 1 < value.length() ? value.charAt(index + 1) : 0;
+      if (ch == '"' && quoted && next == '"') {
+        current.append('"');
+        index++;
+      } else if (ch == '"') {
+        quoted = !quoted;
+      } else if (ch == ',' && !quoted) {
+        row.add(current.toString());
+        current.setLength(0);
+      } else if ((ch == '\n' || ch == '\r') && !quoted) {
+        if (ch == '\r' && next == '\n') index++;
+        row.add(current.toString());
+        rows.add(row);
+        row = new ArrayList<>();
+        current.setLength(0);
+      } else {
+        current.append(ch);
+      }
+    }
+    if (!current.isEmpty() || !row.isEmpty()) {
+      row.add(current.toString());
+      rows.add(row);
+    }
+    return rows;
+  }
+
+  private List<List<String>> parseXlsxRows(MultipartFile file) throws IOException {
+    Map<String, String> entries = new LinkedHashMap<>();
+    try (ZipInputStream zip = new ZipInputStream(file.getInputStream(), StandardCharsets.UTF_8)) {
+      ZipEntry entry;
+      while ((entry = zip.getNextEntry()) != null) {
+        String name = entry.getName();
+        if ("xl/sharedStrings.xml".equals(name)
+            || (name.startsWith("xl/worksheets/sheet") && name.endsWith(".xml"))) {
+          entries.put(name, new String(zip.readAllBytes(), StandardCharsets.UTF_8));
+        }
+      }
+    }
+    String sheetXml = entries.entrySet().stream()
+        .filter(entry -> entry.getKey().startsWith("xl/worksheets/sheet"))
+        .map(Map.Entry::getValue)
+        .findFirst()
+        .orElseThrow(() -> new IllegalArgumentException("XLSX 中没有可读取的工作表"));
+    List<String> sharedStrings = parseSharedStrings(entries.get("xl/sharedStrings.xml"));
+    return parseWorksheetRows(sheetXml, sharedStrings);
+  }
+
+  private List<String> parseSharedStrings(String xml) {
+    if (!StringUtils.hasText(xml)) return List.of();
+    List<String> values = new ArrayList<>();
+    Matcher itemMatcher = Pattern.compile("<si[^>]*>(.*?)</si>", Pattern.DOTALL).matcher(xml);
+    while (itemMatcher.find()) {
+      String itemXml = itemMatcher.group(1);
+      Matcher textMatcher = Pattern.compile("<t[^>]*>(.*?)</t>", Pattern.DOTALL).matcher(itemXml);
+      StringBuilder value = new StringBuilder();
+      while (textMatcher.find()) {
+        value.append(xmlDecode(textMatcher.group(1)));
+      }
+      values.add(value.toString());
+    }
+    return values;
+  }
+
+  private List<List<String>> parseWorksheetRows(String xml, List<String> sharedStrings) {
+    List<List<String>> rows = new ArrayList<>();
+    Matcher rowMatcher = Pattern.compile("<row[^>]*>(.*?)</row>", Pattern.DOTALL).matcher(xml);
+    while (rowMatcher.find()) {
+      List<String> row = new ArrayList<>();
+      Matcher cellMatcher = Pattern.compile("<c([^>]*)>(.*?)</c>", Pattern.DOTALL).matcher(rowMatcher.group(1));
+      while (cellMatcher.find()) {
+        String attrs = cellMatcher.group(1);
+        int column = columnIndex(attribute(attrs, "r"));
+        while (row.size() <= column) row.add("");
+        row.set(column, xlsxCellValue(attrs, cellMatcher.group(2), sharedStrings));
+      }
+      rows.add(row);
+    }
+    return rows;
+  }
+
+  private String xlsxCellValue(String attrs, String cellXml, List<String> sharedStrings) {
+    String inline = firstMatch(cellXml, "<t[^>]*>(.*?)</t>");
+    if (StringUtils.hasText(inline)) return xmlDecode(inline);
+    String raw = firstMatch(cellXml, "<v[^>]*>(.*?)</v>");
+    if (!StringUtils.hasText(raw)) return "";
+    if ("s".equals(attribute(attrs, "t"))) {
+      int sharedIndex = intFromObject(raw, -1);
+      return sharedIndex >= 0 && sharedIndex < sharedStrings.size() ? sharedStrings.get(sharedIndex) : "";
+    }
+    return xmlDecode(raw);
+  }
+
+  private String attribute(String attrs, String name) {
+    Matcher matcher = Pattern.compile(name + "=\"([^\"]*)\"").matcher(attrs == null ? "" : attrs);
+    return matcher.find() ? matcher.group(1) : "";
+  }
+
+  private String firstMatch(String text, String regex) {
+    Matcher matcher = Pattern.compile(regex, Pattern.DOTALL).matcher(text == null ? "" : text);
+    return matcher.find() ? matcher.group(1) : "";
+  }
+
+  private int columnIndex(String cellRef) {
+    String letters = cellRef == null ? "" : cellRef.replaceAll("[^A-Za-z]", "").toUpperCase(Locale.ROOT);
+    if (!StringUtils.hasText(letters)) return 0;
+    int index = 0;
+    for (int i = 0; i < letters.length(); i++) {
+      index = index * 26 + (letters.charAt(i) - 'A' + 1);
+    }
+    return Math.max(0, index - 1);
+  }
+
+  private String xmlDecode(String value) {
+    return (value == null ? "" : value)
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+  }
+
   private void audit(String actor, String action, String targetType, String targetId, Map<String, ?> detail) {
     jdbc.update(
         "insert into audit_log (actor, action, target_type, target_id, detail_json) values (?, ?, ?, ?, cast(? as json))",
@@ -4340,6 +4918,14 @@ public class CompassService {
       jdbc.execute("alter table " + table + " add column " + definition);
     } catch (DataAccessException ignored) {
       // Existing installations already have the column.
+    }
+  }
+
+  private void addIndex(String table, String name, String columns) {
+    try {
+      jdbc.execute("alter table " + table + " add index " + name + " " + columns);
+    } catch (DataAccessException ignored) {
+      // Existing installations already have the index.
     }
   }
 

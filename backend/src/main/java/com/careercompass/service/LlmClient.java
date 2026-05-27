@@ -56,7 +56,7 @@ public class LlmClient {
 
   public void requireAvailable() {
     if (!available()) {
-      throw new IllegalStateException("大模型服务未启用或未配置 API Key");
+      throw new IllegalStateException("AI助手当前繁忙，请稍后再试");
     }
   }
 
@@ -290,16 +290,16 @@ public class LlmClient {
           .build();
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() < 200 || response.statusCode() >= 300) {
-        throw new IllegalStateException("大模型接口返回 HTTP " + response.statusCode());
+        throw new IllegalStateException("AI助手当前繁忙，请稍后再试");
       }
       JsonNode root = objectMapper.readTree(response.body());
       String content = root.path("choices").path(0).path("message").path("content").asText("");
       if (!StringUtils.hasText(content)) {
-        throw new IllegalStateException("大模型未返回有效内容");
+        throw new IllegalStateException("AI助手当前繁忙，请稍后再试");
       }
       return content.trim();
     } catch (Exception exception) {
-      throw new IllegalStateException("大模型调用失败：" + exception.getMessage(), exception);
+      throw new IllegalStateException("AI助手当前繁忙，请稍后再试", exception);
     }
   }
 
@@ -323,16 +323,16 @@ public class LlmClient {
           .build();
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() < 200 || response.statusCode() >= 300) {
-        throw new IllegalStateException("大模型接口返回 HTTP " + response.statusCode());
+        throw new IllegalStateException("AI助手当前繁忙，请稍后再试");
       }
       JsonNode root = objectMapper.readTree(response.body());
       String content = root.path("choices").path(0).path("message").path("content").asText("");
       if (!StringUtils.hasText(content)) {
-        throw new IllegalStateException("大模型未返回有效内容");
+        throw new IllegalStateException("AI助手当前繁忙，请稍后再试");
       }
       return objectMapper.readValue(extractJson(content), new TypeReference<>() {});
     } catch (Exception exception) {
-      throw new IllegalStateException("大模型调用失败：" + exception.getMessage(), exception);
+      throw new IllegalStateException("AI助手当前繁忙，请稍后再试", exception);
     }
   }
 

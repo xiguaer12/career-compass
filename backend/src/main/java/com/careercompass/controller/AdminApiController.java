@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/admin")
@@ -128,6 +129,11 @@ public class AdminApiController {
   @PostMapping("/charts/save")
   public ApiResponse<Map<String, Object>> saveChart(@RequestBody ChartSaveRequest request) {
     return ApiResponse.message("图表已保存", service.saveChart(request));
+  }
+
+  @PostMapping("/charts/import")
+  public ApiResponse<ChartImportResult> importChart(@RequestParam("file") MultipartFile file) {
+    return ApiResponse.message("图表数据导入解析完成", service.importChart(file));
   }
 
   @PostMapping("/charts/refresh")

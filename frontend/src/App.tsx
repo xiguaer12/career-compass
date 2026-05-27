@@ -92,11 +92,11 @@ import {
   type TagItem,
   type WorkbenchResponse
 } from "./api";
-import { parseCsvRows, visibleFavoriteItems } from "./utils";
+import { visibleFavoriteItems } from "./utils";
 import {
   adminQueue
 } from "./data";
-import type { CommunityPost, PathInfo, TemplateResource } from "./types";
+import type { CommunityPost, CommunityPublicProfile, PathInfo, QuestionnaireTemplate, TemplateResource } from "./types";
 
 type TabKey = "home" | "workspace" | "report" | "paths" | "charts" | "community" | "messages" | "me";
 
@@ -107,6 +107,13 @@ type PostDraft = {
   type: string;
   anonymous: boolean;
   imageUrls: string[];
+};
+
+type ReportDraft = {
+  targetId: number;
+  targetType: "post" | "comment";
+  reason: string;
+  detail: string;
 };
 
 type ChartForm = {
@@ -128,6 +135,39 @@ type ChartSeries = {
   key: string;
   name?: string;
   color?: string;
+};
+
+const aiConfigTypes = [
+  "prompt",
+  "questionnaire",
+  "report_template",
+  "disclaimer",
+  "algorithm_weights",
+  "model_params"
+];
+
+const aiConfigTemplates: Record<string, { version: string; title: string; content: string }> = {
+  algorithm_weights: {
+    version: "WEIGHT-2026.06",
+    title: "三路径匹配权重",
+    content: JSON.stringify({
+      weights: {
+        profileFit: 35,
+        interviewSignals: 30,
+        constraints: 20,
+        dataEvidence: 15
+      }
+    }, null, 2)
+  },
+  model_params: {
+    version: "MODEL-2026.06",
+    title: "大模型调用参数",
+    content: JSON.stringify({
+      temperature: 0.7,
+      topP: 0.9,
+      maxTokens: 4000
+    }, null, 2)
+  }
 };
 
 type PathForm = {
@@ -167,6 +207,15 @@ const emptyPostDraft: PostDraft = {
   anonymous: true,
   imageUrls: []
 };
+
+const reportReasonOptions = [
+  "内容不实或误导",
+  "广告引流或垃圾信息",
+  "攻击谩骂或不友善",
+  "泄露隐私或敏感信息",
+  "与三路径规划无关",
+  "其他问题"
+];
 
 const emptyChartForm: ChartForm = {
   title: "",
@@ -584,6 +633,7 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
   const [registerProfile, setRegisterProfile] = useState({
     name: "",
@@ -632,6 +682,12 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
       if (mode === "login") {
         onSession(await authApi.login(email, password));
       } else {
+        if (password !== confirmPassword) {
+          setPassword("");
+          setConfirmPassword("");
+          setError("密码不一致，请重新输入");
+          return;
+        }
         onSession(await authApi.register({
           email,
           password,
@@ -688,6 +744,14 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
         {mode === "register" && (
           <div className="register-profile-grid">
             <label className="full-span">
+              <span>确认密码</span>
+              <input
+                type={showPassword ? "text" : "password"}
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+              />
+            </label>
+            <label className="full-span">
               <span>邮箱验证码</span>
               <div className="inline-control verification-code-control">
                 <input value={verificationCode} maxLength={6} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))} />
@@ -741,8 +805,8 @@ function HomeView({ report, onNavigate }: { report: AiReport | null; onNavigate:
   useEffect(() => {
     publicApi.paths()
       .then((pages) => setHomePaths(pages.map(pathPageToInfo)))
-      .catch((exception) => {
-        setHomeError(exception instanceof Error ? exception.message : "路径配置加载失败");
+      .catch(() => {
+        setHomeError("内容加载失败，请刷新重试");
       });
   }, []);
 
@@ -842,7 +906,7 @@ function HomeView({ report, onNavigate }: { report: AiReport | null; onNavigate:
               <HomePathIntroCard key={path.key} path={path} />
             ))}
             {displayHomePaths.length === 0 && (
-              <div className="empty-state">路径配置加载中，后台启用后会在这里展示考研、考公、就业的入口说明。</div>
+              <div className="empty-state">敬请期待</div>
             )}
           </div>
         </div>
@@ -1054,6 +1118,11 @@ function WorkspaceView({
   const [interviewLoading, setInterviewLoading] = useState(false);
   const [workbench, setWorkbench] = useState<WorkbenchResponse | null>(null);
   const [reportMessage, setReportMessage] = useState("");
+  const [questionnaireTemplate, setQuestionnaireTemplate] = useState<QuestionnaireTemplate | null>(null);
+
+  useEffect(() => {
+    publicApi.assessmentTemplate().then(setQuestionnaireTemplate).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     if (!session) {
@@ -1098,7 +1167,7 @@ function WorkspaceView({
     setSaving(true);
     setReportMessage("报告生成任务提交中...");
     try {
-      const task = await studentApi.submitAssessment(session.token, assessment);
+      const task = await studentApi.submitAssessment(session.token, assessment, questionnaireTemplate?.version);
       onTask(task);
       setReportMessage(task.message || "AI 报告正在生成");
       if (task.status === "已完成" && task.report) {
@@ -1182,7 +1251,7 @@ function WorkspaceView({
     setSaving(true);
     try {
       const emptyAnswers: Record<string, unknown> = { sourceMessages: [] };
-      await studentApi.saveDraft(session.token, emptyAnswers, 0, "ai-interview");
+      await studentApi.saveDraft(session.token, emptyAnswers, 0, "ai-interview", questionnaireTemplate?.version);
       setAssessment({});
       setInterviewMessages(initialInterviewMessages());
       setInterviewInput("");
@@ -1211,6 +1280,11 @@ function WorkspaceView({
       )}
       <section className="surface status-surface">
           <SectionTitle icon={Bot} title="AI 路径访谈" />
+          {questionnaireTemplate && (
+            <p className="helper-text">
+              当前访谈模板：{questionnaireTemplate.title}（{questionnaireTemplate.version}） · {questionnaireTemplate.content}
+            </p>
+          )}
           <div className="stepper">
             {["账号", "AI 访谈", "AI 报告"].map((step, index) => (
               <div className={index === 0 || (index === 1 && interviewProgress > 0) ? "step done" : "step"} key={step}>
@@ -1392,6 +1466,7 @@ function ReportView({
   const narrativeReport = currentReport?.narrativeReport?.trim();
   const studentProfile = currentReport?.studentProfile?.trim();
   const hasStructuredReport = scoreRows.length > 0 || dimensionRows.length > 0 || planRows.length > 0 || riskRows.length > 0 || alternativeRows.length > 0;
+  const reportChartMissing = Boolean(currentReport && hasStructuredReport && dimensionRows.length === 0);
 
   useEffect(() => {
     if (!session) {
@@ -1459,7 +1534,14 @@ function ReportView({
     }
   }
 
+  function confirmReportExport() {
+    if (!reportChartMissing) return true;
+    return window.confirm("报告图表尚未加载完成，继续导出可能缺少图表。是否继续？");
+  }
+
   function exportPdf() {
+    if (!confirmReportExport()) return;
+    setExportError("");
     window.print();
   }
 
@@ -1467,6 +1549,7 @@ function ReportView({
     const node = reportExportRef.current;
     if (!node) return;
     setExportError("");
+    if (!confirmReportExport()) return;
     const rect = node.getBoundingClientRect();
     const width = Math.ceil(rect.width);
     const height = Math.ceil(node.scrollHeight);
@@ -1563,6 +1646,9 @@ function ReportView({
           </div>
         )}
       </section>
+      {reportChartMissing && (
+        <p className="form-error">报告图表尚未加载完成，导出前建议刷新或重新生成报告。</p>
+      )}
       {session && task && task.status !== "已完成" && (
         <section className="surface">
           <SectionTitle icon={Clock3} title="最近报告任务" />
@@ -1793,15 +1879,15 @@ function PathsView({
         setPaths(next);
         if (!selectedPathKey && next[0]) onSelectedPathKeyChange(next[0].key);
       })
-      .catch((exception) => setPathError(exception instanceof Error ? exception.message : "路径配置加载失败"));
+      .catch(() => setPathError("内容加载失败，请刷新重试"));
   }, []);
 
   useEffect(() => {
     if (!selected) return;
     setPathError("");
-    publicApi.path(selected.key).then(setPathPage).catch((exception) => {
+    publicApi.path(selected.key).then(setPathPage).catch(() => {
       setPathPage(null);
-      setPathError(exception instanceof Error ? exception.message : "路径详情加载失败");
+      setPathError("内容加载失败，请刷新重试");
     });
     api<ChartItem[]>(`/api/charts?path=${encodeURIComponent(selected.name)}`).then(setPathCharts).catch(() => setPathCharts([]));
     communityApi.list({ path: selected.name }).then(setPathPosts).catch(() => setPathPosts([]));
@@ -1840,7 +1926,7 @@ function PathsView({
         {pathError && <p className="form-error">{pathError}</p>}
         <section className="surface">
           <SectionTitle icon={Route} title="三路径配置" />
-          <div className="empty-state">暂无启用路径，请先在后台维护三路径配置。</div>
+          <div className="empty-state">敬请期待</div>
         </section>
       </div>
     );
@@ -1925,7 +2011,7 @@ function PathsView({
                 )}
               </div>
             ))}
-            {(!pathPage?.highlights || pathPage.highlights.length === 0) && <div className="empty-state">暂无审核资讯</div>}
+            {(!pathPage?.highlights || pathPage.highlights.length === 0) && <div className="empty-state">敬请期待</div>}
           </div>
         </div>
         <aside className="path-side-stack">
@@ -1989,12 +2075,12 @@ function PathsView({
                   <Search size={16} />
                 </div>
               ))}
-              {pathCharts.length === 0 && <div className="empty-state">暂无相关图表</div>}
+              {pathCharts.length === 0 && <div className="empty-state">敬请期待</div>}
             </div>
           </div>
           <div className="surface">
             <SectionTitle icon={MessagesSquare} title="路径经验与问答" />
-            <PostList posts={pathPosts.slice(0, 3)} onOpen={onOpenCommunityPost} showActions={false} clickable />
+            <PostList posts={pathPosts.slice(0, 3)} onOpen={onOpenCommunityPost} showActions={false} clickable emptyLabel="敬请期待" />
           </div>
         </aside>
       </section>
@@ -2002,7 +2088,7 @@ function PathsView({
       {pathSection === "experience" && (
         <section className="surface">
           <SectionTitle icon={MessagesSquare} title={`${selected.name}经验交流`} />
-          <PostList posts={pathPosts} onOpen={onOpenCommunityPost} showActions={false} clickable />
+          <PostList posts={pathPosts} onOpen={onOpenCommunityPost} showActions={false} clickable emptyLabel="敬请期待" />
         </section>
       )}
     </div>
@@ -2333,6 +2419,10 @@ function CommunityView({
   const [editDraft, setEditDraft] = useState<PostDraft>(emptyPostDraft);
   const [editSaving, setEditSaving] = useState(false);
   const [uploadingImages, setUploadingImages] = useState(false);
+  const [publicProfile, setPublicProfile] = useState<CommunityPublicProfile | null>(null);
+  const [reportDraft, setReportDraft] = useState<ReportDraft | null>(null);
+  const [reportSaving, setReportSaving] = useState(false);
+  const [reportError, setReportError] = useState("");
   const [error, setError] = useState("");
   const ownPostIds = useMemo(() => new Set(ownPosts.map((post) => post.id)), [ownPosts]);
 
@@ -2370,9 +2460,22 @@ function CommunityView({
     await openPostById(post.id, post.title);
   }
 
+  async function openAuthorProfile(authorId?: number) {
+    if (!authorId) return;
+    try {
+      const profile = await communityApi.userProfile(authorId, session?.token);
+      setPublicProfile(profile);
+      setSelectedPost(null);
+      setComments([]);
+    } catch (exception) {
+      setNotice(exception instanceof Error ? exception.message : "用户主页暂不可用");
+    }
+  }
+
   async function openPostById(postId: number, fallbackTitle = "社区内容") {
     const detail = await communityApi.detail(postId, session?.token);
     setSelectedPost(detail);
+    setPublicProfile(null);
     setComments(await communityApi.comments(postId));
     if (session?.token) {
       studentApi.recordActivity(session.token, "post", String(postId), detail.title || fallbackTitle, `/community/${postId}`).catch(() => undefined);
@@ -2443,6 +2546,7 @@ function CommunityView({
 
   function closePostDetail() {
     setSelectedPost(null);
+    setPublicProfile(null);
     setComments([]);
     setCommentBody("");
     setReplyToComment(null);
@@ -2518,13 +2622,46 @@ function CommunityView({
     setSelectedPost((current) => current ? patchInteraction(current) : current);
   }
 
-  async function report(postId: number) {
+  function report(targetId: number, targetType: "post" | "comment" = "post") {
     if (!session) {
       onLogin();
       return;
     }
-    await communityApi.report(session.token, postId, "内容不实或不适合公开展示");
-    setNotice("举报已提交，后台会保留处理记录");
+    setReportError("");
+    setReportDraft({
+      targetId,
+      targetType,
+      reason: reportReasonOptions[0],
+      detail: ""
+    });
+  }
+
+  async function submitReport() {
+    if (!session || !reportDraft) {
+      onLogin();
+      return;
+    }
+    const detail = reportDraft.detail.trim();
+    if (!reportDraft.reason || !detail) {
+      setReportError("请选择举报原因，并填写补充说明");
+      return;
+    }
+    setReportSaving(true);
+    setReportError("");
+    try {
+      await communityApi.report(
+        session.token,
+        reportDraft.targetId,
+        `${reportDraft.reason}：${detail}`,
+        reportDraft.targetType
+      );
+      setReportDraft(null);
+      setNotice("举报已提交，后台会保留处理记录");
+    } catch (exception) {
+      setReportError(exception instanceof Error ? exception.message : "举报提交失败");
+    } finally {
+      setReportSaving(false);
+    }
   }
 
   async function addComment() {
@@ -2552,7 +2689,44 @@ function CommunityView({
 
   return (
     <div className="page-stack community-page">
-      {!detailOnly && !selectedPost && (
+      {reportDraft && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !reportSaving) setReportDraft(null);
+        }}>
+          <section className="auth-modal report-modal" role="dialog" aria-modal="true" aria-label="提交举报">
+            <div className="modal-title-row">
+              <SectionTitle icon={Flag} title={reportDraft.targetType === "comment" ? "举报评论" : "举报帖子"} />
+              <button className="icon-button" title="关闭" onClick={() => setReportDraft(null)} disabled={reportSaving}>
+                <X size={16} />
+              </button>
+            </div>
+            <label>
+              <span>举报原因</span>
+              <select value={reportDraft.reason} onChange={(event) => setReportDraft({ ...reportDraft, reason: event.target.value })}>
+                {reportReasonOptions.map((option) => <option value={option} key={option}>{option}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>补充说明</span>
+              <textarea
+                value={reportDraft.detail}
+                onChange={(event) => setReportDraft({ ...reportDraft, detail: event.target.value })}
+                placeholder="请说明你看到的问题，便于后台审核处理"
+                rows={4}
+              />
+            </label>
+            {reportError && <p className="form-error">{reportError}</p>}
+            <div className="button-row">
+              <button className="primary-button" onClick={submitReport} disabled={reportSaving}>
+                <Flag size={16} />
+                {reportSaving ? "提交中..." : "提交举报"}
+              </button>
+              <button className="secondary-button" onClick={() => setReportDraft(null)} disabled={reportSaving}>取消</button>
+            </div>
+          </section>
+        </div>
+      )}
+      {!detailOnly && !selectedPost && !publicProfile && (
         <>
           <section className="surface community-composer">
             <SectionTitle icon={Plus} title="发布帖子或提问" />
@@ -2649,9 +2823,37 @@ function CommunityView({
               onReport={report}
               onEdit={beginEdit}
               onDelete={deletePost}
+              onAuthor={openAuthorProfile}
             />
           </section>
         </>
+      )}
+      {publicProfile && (
+        <section className="surface community-detail">
+          <div className="detail-toolbar">
+            <button className="secondary-button" onClick={closePostDetail}>
+              <ArrowLeft size={16} />
+              返回社区
+            </button>
+          </div>
+          <SectionTitle icon={UserRound} title="用户主页" />
+          <div className="profile-summary-grid">
+            <div>
+              <h2>{publicProfile.displayName}</h2>
+              <small>加入时间 {publicProfile.joinedAt}</small>
+            </div>
+            <span>公开帖子 {publicProfile.posts}</span>
+            <span>评论 {publicProfile.comments}</span>
+            <span>获赞 {publicProfile.likes}</span>
+          </div>
+          <PostList
+            posts={publicProfile.recentPosts}
+            clickable
+            onOpen={openPost}
+            onAuthor={openAuthorProfile}
+            showActions={false}
+          />
+        </section>
       )}
       {detailOnly && !selectedPost && (
         <section className="surface community-detail">
@@ -2688,7 +2890,14 @@ function CommunityView({
               <h2>{selectedPost.title}</h2>
               <p className="community-detail-body">{selectedPost.body}</p>
               <PostImageGrid imageUrls={selectedPost.imageUrls} detail />
-              <small>{selectedPost.authorDisplay || "匿名用户"} · {selectedPost.createdAt}</small>
+              <small>
+                {selectedPost.authorId ? (
+                  <button type="button" className="text-button inline-author-link" onClick={() => openAuthorProfile(selectedPost.authorId)}>
+                    {selectedPost.authorDisplay || "匿名用户"}
+                  </button>
+                ) : (selectedPost.authorDisplay || "匿名用户")}
+                {" · "}{selectedPost.createdAt}
+              </small>
               <div className="post-actions detail-actions">
                 <button
                   className={selectedPost.liked ? "icon-button active-interaction" : "icon-button"}
@@ -2751,6 +2960,10 @@ function CommunityView({
                 </div>
                 <div className="button-row compact-actions">
                   <button className="secondary-button" onClick={() => setReplyToComment(comment)}>回复</button>
+                  <button className="secondary-button" onClick={() => report(comment.id, "comment")}>
+                    <Flag size={15} />
+                    举报
+                  </button>
                   {selectedPost.type === "问答" && (
                     <button className="secondary-button" onClick={() => bestAnswer(comment.id, !comment.bestAnswer)}>
                       {comment.bestAnswer ? "取消最佳" : "设为最佳"}
@@ -2921,11 +3134,11 @@ function AdminView() {
     setAdminError("");
   }
 
-  async function updateStatus(id: number, status: string) {
+  async function updateStatus(id: number, status: string, expectedStatus?: string) {
     if (!admin) return;
     if ((status === "已驳回" || status === "已下架") && !window.confirm("确认执行该审核处置？")) return;
     await runAdminAction(`post-${id}-${status}`, async () => {
-      await adminApi.updatePostStatus(admin.token, id, status, status === "已驳回" ? "内容不符合公开展示要求" : "后台审核");
+      await adminApi.updatePostStatus(admin.token, id, status, status === "已驳回" ? "内容不符合公开展示要求" : "后台审核", expectedStatus);
       return `社区内容已更新为：${status}`;
     });
   }
@@ -2975,8 +3188,9 @@ function AdminView() {
         summary: candidate.summary,
         category: candidate.path || "就业",
         tags: candidate.tags || candidate.path,
-        displayPosition: "路径页"
-      } : { reason: "来源或内容暂不适合发布" });
+        displayPosition: "路径页",
+        expectedStatus: candidate.reviewStatus
+      } : { reason: "来源或内容暂不适合发布", expectedStatus: candidate?.reviewStatus });
       if (action === "驳回") {
         return `抓取候选已驳回，已同步下架 ${result.offlineContentCount ?? 0} 条前台资讯`;
       }
@@ -3039,74 +3253,82 @@ function AdminView() {
     });
   }
 
-  async function punishCommunityUser(id: number, status: string) {
+  async function punishCommunityUser(user: CommunityUserAdminItem, status: string) {
     if (!admin) return;
     const reason = window.prompt(`请输入${status}原因`, "社区违规处理") || "社区违规处理";
-    await runAdminAction(`community-user-${id}-${status}`, async () => {
-      await adminApi.updateStudentStatus(admin.token, id, status, reason);
+    await runAdminAction(`community-user-${user.id}-${status}`, async () => {
+      await adminApi.banCommunityUser(admin.token, user.id, status, reason, user.status);
       return "社区用户处罚状态已更新";
     });
   }
 
-  async function updateComment(id: number, status: string) {
+  async function updateComment(id: number, status: string, expectedStatus?: string) {
     if (!admin) return;
     await runAdminAction(`comment-${id}-${status}`, async () => {
-      await adminApi.updateCommentStatus(admin.token, id, status, status === "已下架" ? "后台评论审核下架" : "后台评论审核");
+      await adminApi.updateCommentStatus(admin.token, id, status, status === "已下架" ? "后台评论审核下架" : "后台评论审核", expectedStatus);
       return `评论已更新为：${status}`;
     });
   }
 
-  function applyImportedChartRows(rows: string[][]) {
-    if (rows.length === 0) {
-      setAdminError("导入文件没有可用数据行");
+  function applyImportedChartData(result: { importedRows: number; data: Record<string, unknown>; errors: Array<{ row: number; reason: string }> }) {
+    if (result.errors.length > 0) {
+      setAdminError(result.errors.slice(0, 5).map((error) => `第 ${error.row} 行：${error.reason}`).join("；"));
       return;
     }
-    const headers = rows[0].map((item) => item.trim()).filter(Boolean);
-    const dataRows = rows.slice(1).filter((row) => row.some((cell) => String(cell).trim()));
-    if (headers.length === 0 || dataRows.length === 0) {
-      setAdminError("导入文件至少需要表头和一行数据");
-      return;
-    }
-    const parsedRows = dataRows.map((row) => Object.fromEntries(headers.map((header, index) => {
-      const raw = String(row[index] ?? "");
-      const numeric = Number(raw);
-      return [header, raw.trim() !== "" && !Number.isNaN(numeric) ? numeric : raw];
-    })));
-    const valueKeys = headers.slice(1);
     setChartForm((current) => ({
       ...current,
-      dataText: JSON.stringify({
-        xKey: headers[0],
-        series: valueKeys.map((key, index) => ({ key, name: key, color: chartPalette[index % chartPalette.length] })),
-        rows: parsedRows
-      }, null, 2)
+      dataText: JSON.stringify(result.data, null, 2)
     }));
-    setAdminNotice(`已解析 ${parsedRows.length} 行数据，可继续保存图表`);
+    setAdminNotice(`后端已解析并校验 ${result.importedRows} 行数据，请补齐图表标题后保存`);
+  }
+
+  function chartFormCanAutoSaveImport(form: ChartForm) {
+    return Boolean(form.title.trim() && form.chartType.trim() && form.path.trim());
   }
 
   async function importChartFile(file: File | null) {
-    if (!file) return;
+    if (!file || !admin) return;
     const lowerName = file.name.toLowerCase();
-    if (lowerName.endsWith(".xlsx")) {
-      try {
-        const { readSheet } = await import("read-excel-file/browser");
-        const rows = (await readSheet(file)).map((row) => row.map((cell) => String(cell ?? "")));
-        applyImportedChartRows(rows);
-      } catch (exception) {
-        setAdminError(exception instanceof Error ? exception.message : "Excel 文件解析失败");
-      }
-      return;
-    }
     if (lowerName.endsWith(".xls")) {
       setAdminError("暂不支持旧版 .xls，请另存为 .xlsx 或 CSV 后导入");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result || "");
-      applyImportedChartRows(parseCsvRows(text));
-    };
-    reader.readAsText(file, "utf-8");
+    try {
+      setAdminError("");
+      const result = await adminApi.importChart(admin.token, file);
+      if (result.errors.length > 0 || !chartFormCanAutoSaveImport(chartForm)) {
+        applyImportedChartData(result);
+        return;
+      }
+      const dataText = JSON.stringify(result.data, null, 2);
+      setChartForm((current) => ({
+        ...current,
+        dataText
+      }));
+      await runAdminAction("import-chart", async () => {
+        const filters = parseJsonRecord(chartForm.filtersText, "筛选条件");
+        const saved = await adminApi.saveChart(admin.token, {
+          id: chartForm.id,
+          title: chartForm.title,
+          chartType: chartForm.chartType,
+          path: chartForm.path,
+          methodology: chartForm.methodology || `由 ${file.name} 导入，后端已校验 ${result.importedRows} 行数据`,
+          sourceName: chartForm.sourceName || "后台导入数据",
+          sourceUrl: chartForm.sourceUrl,
+          visibility: chartForm.visibility,
+          displayPosition: chartForm.displayPosition,
+          status: chartForm.status,
+          data: result.data,
+          filters
+        });
+        if (typeof saved.id === "number") {
+          setChartForm((current) => ({ ...current, id: saved.id as number }));
+        }
+        return `数据导入成功，已保存 ${result.importedRows} 行图表数据`;
+      });
+    } catch (exception) {
+      setAdminError(exception instanceof Error ? exception.message : "导入文件解析失败");
+    }
   }
 
   async function saveTag() {
@@ -3179,6 +3401,17 @@ function AdminView() {
     });
   }
 
+  function updateAiConfigType(configType: string) {
+    const template = aiConfigTemplates[configType];
+    setAiForm((current) => ({
+      ...current,
+      configType,
+      version: template && !current.id ? template.version : current.version,
+      title: template && !current.id ? template.title : current.title,
+      content: template && !current.id ? template.content : current.content
+    }));
+  }
+
   function newTag() {
     setTagForm({ id: undefined, name: "", type: "内容标签", status: "启用", sortOrder: 0 });
   }
@@ -3187,10 +3420,10 @@ function AdminView() {
     setAiForm({ id: undefined, configType: "prompt", version: "", title: "", content: "", status: "草稿" });
   }
 
-  async function handleReport(id: number, status: string) {
+  async function handleReport(id: number, status: string, expectedStatus?: string) {
     if (!admin) return;
     await runAdminAction(`report-${id}-${status}`, async () => {
-      await adminApi.handleReport(admin.token, id, status, status === "已处理" ? "已完成核查与处置" : "暂不处理");
+      await adminApi.handleReport(admin.token, id, status, status === "已处理" ? "已完成核查与处置" : "暂不处理", expectedStatus);
       setExpandedReportId(null);
       setReports((current) => current.filter((report) => report.id !== id));
       return "举报处理结果已记录，已从待处理列表移除";
@@ -3437,9 +3670,9 @@ function AdminView() {
                       </td>
                       <td>
                         <div className="button-row compact-actions">
-                          <button className="secondary-button" onClick={() => punishCommunityUser(user.id, "禁言中")} disabled={adminWorking}>禁言</button>
-                          <button className="secondary-button danger-button" onClick={() => punishCommunityUser(user.id, "封禁中")} disabled={adminWorking}>封禁</button>
-                          <button className="secondary-button" onClick={() => punishCommunityUser(user.id, "已完成引导")} disabled={adminWorking}>解除</button>
+                          <button className="secondary-button" onClick={() => punishCommunityUser(user, "禁言中")} disabled={adminWorking}>禁言</button>
+                          <button className="secondary-button danger-button" onClick={() => punishCommunityUser(user, "封禁中")} disabled={adminWorking}>封禁</button>
+                          <button className="secondary-button" onClick={() => punishCommunityUser(user, "已完成引导")} disabled={adminWorking}>解除</button>
                         </div>
                       </td>
                     </tr>
@@ -3549,10 +3782,10 @@ function AdminView() {
                     <span>{post.type} · {post.path} · {post.status} · 发布 {formatAdminTime(post.createdAt)}</span>
                   </div>
                   <div className="button-row compact-actions">
-                    <button className="secondary-button" onClick={() => updateStatus(post.id, "已通过")} disabled={adminWorking}>{busyLabel(`post-${post.id}-已通过`, "通过")}</button>
-                    <button className="secondary-button" onClick={() => updateStatus(post.id, "已驳回")} disabled={adminWorking}>{busyLabel(`post-${post.id}-已驳回`, "驳回")}</button>
-                    <button className="secondary-button" onClick={() => updateStatus(post.id, "已下架")} disabled={adminWorking}>{busyLabel(`post-${post.id}-已下架`, "下架")}</button>
-                    <button className="secondary-button" onClick={() => updateStatus(post.id, "精选")} disabled={adminWorking}>{busyLabel(`post-${post.id}-精选`, "精选")}</button>
+                    <button className="secondary-button" onClick={() => updateStatus(post.id, "已通过", post.status)} disabled={adminWorking}>{busyLabel(`post-${post.id}-已通过`, "通过")}</button>
+                    <button className="secondary-button" onClick={() => updateStatus(post.id, "已驳回", post.status)} disabled={adminWorking}>{busyLabel(`post-${post.id}-已驳回`, "驳回")}</button>
+                    <button className="secondary-button" onClick={() => updateStatus(post.id, "已下架", post.status)} disabled={adminWorking}>{busyLabel(`post-${post.id}-已下架`, "下架")}</button>
+                    <button className="secondary-button" onClick={() => updateStatus(post.id, "精选", post.status)} disabled={adminWorking}>{busyLabel(`post-${post.id}-精选`, "精选")}</button>
                   </div>
                 </div>
               ))}
@@ -3591,8 +3824,8 @@ function AdminView() {
                       <button className="secondary-button" onClick={() => setExpandedReportId(expanded ? null : report.id)} disabled={adminWorking}>
                         {expanded ? "收起" : "详情"}
                       </button>
-                      <button className="secondary-button" onClick={() => handleReport(report.id, "已处理")} disabled={adminWorking}>{busyLabel(`report-${report.id}-已处理`, "处理")}</button>
-                      <button className="secondary-button danger-button" onClick={() => handleReport(report.id, "已驳回")} disabled={adminWorking}>{busyLabel(`report-${report.id}-已驳回`, "驳回")}</button>
+                      <button className="secondary-button" onClick={() => handleReport(report.id, "已处理", report.status)} disabled={adminWorking}>{busyLabel(`report-${report.id}-已处理`, "处理")}</button>
+                      <button className="secondary-button danger-button" onClick={() => handleReport(report.id, "已驳回", report.status)} disabled={adminWorking}>{busyLabel(`report-${report.id}-已驳回`, "驳回")}</button>
                     </div>
                   </div>
                 );
@@ -3609,8 +3842,8 @@ function AdminView() {
                     <small>{comment.status} · {formatAdminTime(comment.createdAt)}</small>
                   </div>
                   <div className="button-row compact-actions">
-                    <button className="secondary-button" onClick={() => updateComment(comment.id, "已通过")} disabled={adminWorking}>通过</button>
-                    <button className="secondary-button danger-button" onClick={() => updateComment(comment.id, "已下架")} disabled={adminWorking}>下架</button>
+                    <button className="secondary-button" onClick={() => updateComment(comment.id, "已通过", comment.status)} disabled={adminWorking}>通过</button>
+                    <button className="secondary-button danger-button" onClick={() => updateComment(comment.id, "已下架", comment.status)} disabled={adminWorking}>下架</button>
                   </div>
                 </div>
               ))}
@@ -3878,7 +4111,7 @@ function AdminView() {
                 event.target.value = "";
               }} />
             </label>
-            <div className="helper-text">图表数据可声明 xKey、series、insights；趋势图/柱状图会按 series 动态渲染，时间线使用 stage/description。</div>
+            <div className="helper-text">先填写图表标题、类型和路径后导入，系统会在后端校验通过后直接保存并刷新缓存；图表数据可声明 xKey、series、insights。</div>
             <div className="button-row">
               <button className="primary-button" onClick={saveChart} disabled={adminWorking}>{busyLabel("save-chart", "保存图表")}</button>
               <button className="secondary-button" onClick={refreshOfficialCharts} disabled={adminWorking}>
@@ -3961,8 +4194,8 @@ function AdminView() {
             <div className="form-grid compact-form">
               <label>
                 <span>类型</span>
-                <select value={aiForm.configType} onChange={(event) => setAiForm({ ...aiForm, configType: event.target.value })}>
-                  {["prompt", "questionnaire", "report_template", "disclaimer"].map((item) => <option key={item} value={item}>{item}</option>)}
+                <select value={aiForm.configType} onChange={(event) => updateAiConfigType(event.target.value)}>
+                  {aiConfigTypes.map((item) => <option key={item} value={item}>{item}</option>)}
                 </select>
               </label>
               <label><span>版本</span><input value={aiForm.version} onChange={(event) => setAiForm({ ...aiForm, version: event.target.value })} /></label>
@@ -4430,6 +4663,7 @@ function InfoList({ title, items }: { title: string; items: string[] }) {
   return (
     <div className="info-list">
       <h3>{title}</h3>
+      {items.length === 0 && <p>敬请期待</p>}
       {items.map((item) => (
         <p key={item}>{item}</p>
       ))}
@@ -4492,12 +4726,12 @@ function ResourceTable({ filter, session, onLogin }: { filter?: string; session?
           )}
           {!loading && failed && (
             <tr>
-              <td colSpan={5}>模板加载失败，请稍后重试</td>
+              <td colSpan={5}>内容加载失败，请刷新重试</td>
             </tr>
           )}
           {!loading && !failed && rows.length === 0 && (
             <tr>
-              <td colSpan={5}>暂无模板</td>
+              <td colSpan={5}>敬请期待</td>
             </tr>
           )}
           {rows.map((resource) => (
@@ -4542,7 +4776,9 @@ function PostList({
   onFavorite,
   onReport,
   onEdit,
-  onDelete
+  onDelete,
+  onAuthor,
+  emptyLabel = "暂无内容"
 }: {
   posts: CommunityPost[];
   interactive?: boolean;
@@ -4556,10 +4792,12 @@ function PostList({
   onReport?: (id: number) => void;
   onEdit?: (post: CommunityPost) => void;
   onDelete?: (post: CommunityPost) => void;
+  onAuthor?: (authorId?: number) => void;
+  emptyLabel?: string;
 }) {
   return (
     <div className="post-list">
-      {posts.length === 0 && <div className="empty-state">暂无内容</div>}
+      {posts.length === 0 && <div className="empty-state">{emptyLabel}</div>}
       {posts.map((post) => {
         const canManage = manageable || Boolean(manageableIds?.has(post.id));
         const clickablePost = clickable && Boolean(onOpen);
@@ -4588,7 +4826,17 @@ function PostList({
               <h3>{post.title}</h3>
               <p>{post.summary || post.body}</p>
               <PostImageGrid imageUrls={post.imageUrls} />
-              <small>{post.author || post.authorDisplay || "匿名用户"} · {post.createdAt}</small>
+              <small>
+                {post.authorId && onAuthor ? (
+                  <button type="button" className="text-button inline-author-link" onClick={(event) => {
+                    event.stopPropagation();
+                    onAuthor(post.authorId);
+                  }}>
+                    {post.author || post.authorDisplay || "匿名用户"}
+                  </button>
+                ) : (post.author || post.authorDisplay || "匿名用户")}
+                {" · "}{post.createdAt}
+              </small>
             </div>
             {showActions && (
               <div className="post-actions">

@@ -1,4 +1,4 @@
-import type { CommunityPost, TemplateResource } from "./types";
+import type { CommunityPost, CommunityPublicProfile, QuestionnaireTemplate, TemplateResource } from "./types";
 
 export type ApiResponse<T> = {
   success: boolean;
@@ -295,6 +295,17 @@ export type ChartItem = {
   updatedAt: string;
 };
 
+export type ChartImportError = {
+  row: number;
+  reason: string;
+};
+
+export type ChartImportResult = {
+  importedRows: number;
+  data: Record<string, unknown>;
+  errors: ChartImportError[];
+};
+
 export type TagItem = {
   id: number;
   name: string;
@@ -364,6 +375,7 @@ export const publicApi = {
   home: () => api<HomePayload>("/api/home"),
   paths: () => api<PathPage[]>("/api/paths"),
   path: (key: string) => api<PathPage>(`/api/path/${encodeURIComponent(key)}`),
+  assessmentTemplate: () => api<QuestionnaireTemplate>("/api/assessment/template"),
   templates: (category = "") =>
     api<TemplateResource[]>(`/api/templates${category ? `?category=${encodeURIComponent(category)}` : ""}`),
   charts: (params: Record<string, string> = {}) => {
@@ -379,18 +391,18 @@ export const studentApi = {
   recordActivity: (token: string, itemType: string, itemId: string, title: string, url = "") =>
     api<Record<string, unknown>>("/api/activity", { method: "POST", body: JSON.stringify({ itemType, itemId, title, url }) }, token),
   latestDraft: (token: string) => api<QuestionnaireDraft | null>("/api/assessment/draft", {}, token),
-  saveDraft: (token: string, answers: Record<string, unknown>, completionPercent: number, stepKey = "questionnaire") =>
+  saveDraft: (token: string, answers: Record<string, unknown>, completionPercent: number, stepKey = "questionnaire", questionnaireVersion = "QNR-2026.05") =>
     api<QuestionnaireDraft>(
       "/api/assessment/draft",
-      { method: "PUT", body: JSON.stringify({ questionnaireVersion: "QNR-2026.05", answers, completionPercent, stepKey }) },
+      { method: "PUT", body: JSON.stringify({ questionnaireVersion, answers, completionPercent, stepKey }) },
       token
     ),
   interview: (token: string, messages: InterviewMessage[]) =>
     api<InterviewResponse>("/api/assessment/interview", { method: "POST", body: JSON.stringify({ messages }) }, token),
-  submitAssessment: (token: string, answers: Record<string, unknown>) =>
+  submitAssessment: (token: string, answers: Record<string, unknown>, questionnaireVersion = "QNR-2026.05") =>
     api<ReportTask>(
       "/api/assessment/submit",
-      { method: "POST", body: JSON.stringify({ questionnaireVersion: "QNR-2026.05", answers, completionPercent: 100 }) },
+      { method: "POST", body: JSON.stringify({ questionnaireVersion, answers, completionPercent: 100 }) },
       token
     ),
   latestReport: (token: string) => api<AiReport | null>("/api/reports/latest", {}, token),
@@ -420,6 +432,7 @@ export const communityApi = {
     return api<CommunityPost[]>(`/api/community/posts${search ? `?${search}` : ""}`, {}, token);
   },
   detail: (id: number, token?: string) => api<CommunityPost>(`/api/community/posts/${id}`, {}, token),
+  userProfile: (id: number, token?: string) => api<CommunityPublicProfile>(`/api/community/users/${id}`, {}, token),
   comments: (id: number) => api<CommunityComment[]>(`/api/community/posts/${id}/comments`),
   uploadImages: async (token: string, files: File[]) => {
     const formData = new FormData();
@@ -495,18 +508,18 @@ export const adminApi = {
       token
     ),
   posts: (token?: string) => api<CommunityPost[]>("/admin/community/posts", {}, token),
-  updatePostStatus: (token: string, id: number, status: string, reason = "后台操作") =>
+  updatePostStatus: (token: string, id: number, status: string, reason = "后台操作", expectedStatus?: string) =>
     api<Record<string, unknown>>(
       "/admin/community/post/status",
-      { method: "POST", body: JSON.stringify({ id, status, reason }) },
+      { method: "POST", body: JSON.stringify({ id, status, reason, expectedStatus }) },
       token
     ),
   comments: (token: string, status = "") =>
     api<CommunityComment[]>(`/admin/community/comments${status ? `?status=${encodeURIComponent(status)}` : ""}`, {}, token),
-  updateCommentStatus: (token: string, id: number, status: string, reason = "后台评论审核") =>
+  updateCommentStatus: (token: string, id: number, status: string, reason = "后台评论审核", expectedStatus?: string) =>
     api<Record<string, unknown>>(
       "/admin/community/comment/status",
-      { method: "POST", body: JSON.stringify({ id, status, reason }) },
+      { method: "POST", body: JSON.stringify({ id, status, reason, expectedStatus }) },
       token
     ),
   triggerCrawl: (token: string, id: number) => api<Record<string, unknown>>(`/admin/sources/${id}/crawl`, { method: "POST" }, token),
@@ -517,9 +530,11 @@ export const adminApi = {
     const search = new URLSearchParams(Object.entries(params).filter(([, value]) => Boolean(value))).toString();
     return api<StudentAdminItem[]>(`/admin/users${search ? `?${search}` : ""}`, {}, token);
   },
-  updateStudentStatus: (token: string, id: number, status: string, reason = "后台操作") =>
-    api<Record<string, unknown>>("/admin/users/status", { method: "POST", body: JSON.stringify({ id, status, reason }) }, token),
+  updateStudentStatus: (token: string, id: number, status: string, reason = "后台操作", expectedStatus?: string) =>
+    api<Record<string, unknown>>("/admin/users/status", { method: "POST", body: JSON.stringify({ id, status, reason, expectedStatus }) }, token),
   communityUsers: (token: string) => api<CommunityUserAdminItem[]>("/admin/community/users", {}, token),
+  banCommunityUser: (token: string, id: number, status: string, reason = "社区违规处理", expectedStatus?: string) =>
+    api<Record<string, unknown>>("/admin/community/user/ban", { method: "POST", body: JSON.stringify({ id, status, reason, expectedStatus }) }, token),
   candidates: (token: string, status = "") =>
     api<CrawlCandidateItem[]>(`/admin/crawl/candidates${status ? `?status=${encodeURIComponent(status)}` : ""}`, {}, token),
   reviewCandidate: (token: string, id: number, action: string, patch: Record<string, unknown> = {}) =>
@@ -527,6 +542,28 @@ export const adminApi = {
   charts: (token: string) => api<ChartItem[]>("/admin/charts", {}, token),
   saveChart: (token: string, chart: Partial<ChartItem>) =>
     api<Record<string, unknown>>("/admin/charts/save", { method: "POST", body: JSON.stringify(chart) }, token),
+  importChart: async (token: string, file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    const response = await fetch("/admin/charts/import", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body
+    });
+    const text = await response.text();
+    let payload: ApiResponse<ChartImportResult>;
+    try {
+      payload = text
+        ? JSON.parse(text) as ApiResponse<ChartImportResult>
+        : { success: response.ok, message: "", data: undefined as unknown as ChartImportResult };
+    } catch {
+      throw new Error(text || `请求失败：HTTP ${response.status}`);
+    }
+    if (!response.ok || !payload.success) {
+      throw new Error(payload.message || `请求失败：HTTP ${response.status}`);
+    }
+    return payload.data;
+  },
   refreshCharts: (token: string) =>
     api<Record<string, unknown>>("/admin/charts/refresh", { method: "POST" }, token),
   tags: (token: string, type = "") =>
@@ -557,8 +594,8 @@ export const adminApi = {
     ),
   reports: (token: string, status = "") =>
     api<AbuseReportItem[]>(`/admin/reports${status ? `?status=${encodeURIComponent(status)}` : ""}`, {}, token),
-  handleReport: (token: string, id: number, status: string, reason: string) =>
-    api<Record<string, unknown>>("/admin/reports/handle", { method: "POST", body: JSON.stringify({ id, status, reason }) }, token),
+  handleReport: (token: string, id: number, status: string, reason: string, expectedStatus?: string) =>
+    api<Record<string, unknown>>("/admin/reports/handle", { method: "POST", body: JSON.stringify({ id, status, reason, expectedStatus }) }, token),
   audits: (token: string) => api<Array<{ id: number; actor: string; action: string; targetType: string; targetId: string; detail: string; createdAt: string }>>("/admin/audits", {}, token)
 };
 

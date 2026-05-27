@@ -266,6 +266,7 @@ public final class Dtos {
       String body,
       String type,
       String path,
+      Long authorId,
       String authorDisplay,
       boolean anonymous,
       String status,
@@ -299,7 +300,17 @@ public final class Dtos {
 
   public record ReportAbuseRequest(long targetId, String targetType, String reason) {}
 
-  public record AdminStatusRequest(long id, String status, String reason) {}
+  public record AdminStatusRequest(long id, String status, String reason, String expectedStatus) {}
+
+  public record CommunityPublicProfile(
+      long id,
+      String displayName,
+      String joinedAt,
+      int posts,
+      int comments,
+      int likes,
+      List<CommunityPost> recentPosts
+  ) {}
 
   public record CommunityUser(
       long id,
@@ -385,7 +396,8 @@ public final class Dtos {
       String category,
       String tags,
       String displayPosition,
-      String reason
+      String reason,
+      String expectedStatus
   ) {}
 
   public record ChartItem(
@@ -417,6 +429,14 @@ public final class Dtos {
       String visibility,
       String displayPosition,
       String status
+  ) {}
+
+  public record ChartImportError(int row, String reason) {}
+
+  public record ChartImportResult(
+      int importedRows,
+      Map<String, Object> data,
+      List<ChartImportError> errors
   ) {}
 
   public record TagItem(long id, String name, String type, String status, int sortOrder, String createdAt) {}

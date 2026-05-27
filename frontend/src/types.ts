@@ -18,6 +18,7 @@ export type CommunityPost = {
   body?: string;
   type: "经验帖" | "问答" | "资料";
   path: string;
+  authorId?: number;
   author?: string;
   authorDisplay?: string;
   anonymous?: boolean;
@@ -30,6 +31,23 @@ export type CommunityPost = {
   replies: number;
   imageUrls?: string[];
   createdAt: string;
+};
+
+export type CommunityPublicProfile = {
+  id: number;
+  displayName: string;
+  joinedAt: string;
+  posts: number;
+  comments: number;
+  likes: number;
+  recentPosts: CommunityPost[];
+};
+
+export type QuestionnaireTemplate = {
+  version: string;
+  title: string;
+  content: string;
+  publishedAt?: string;
 };
 
 export type TemplateResource = {

@@ -172,7 +172,9 @@ CREATE TABLE IF NOT EXISTS community_post (
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_post_student FOREIGN KEY (student_id) REFERENCES student_account(id),
   INDEX idx_post_path_status_created (path, status, created_at),
-  INDEX idx_post_student_created (student_id, created_at)
+  INDEX idx_post_student_created (student_id, created_at),
+  INDEX idx_post_status_created (status, created_at),
+  INDEX idx_post_type_status_created (type, status, created_at)
 );
 
 CREATE TABLE IF NOT EXISTS community_comment (
@@ -187,7 +189,9 @@ CREATE TABLE IF NOT EXISTS community_comment (
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_comment_post FOREIGN KEY (post_id) REFERENCES community_post(id),
   CONSTRAINT fk_comment_student FOREIGN KEY (student_id) REFERENCES student_account(id),
-  INDEX idx_comment_post_created (post_id, created_at)
+  INDEX idx_comment_post_created (post_id, created_at),
+  INDEX idx_comment_student_created (student_id, created_at),
+  INDEX idx_comment_status_created (status, created_at)
 );
 
 CREATE TABLE IF NOT EXISTS user_favorite (
@@ -251,7 +255,9 @@ CREATE TABLE IF NOT EXISTS abuse_report (
   handled_result VARCHAR(300),
   handled_at TIMESTAMP NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_abuse_status_created (status, created_at)
+  INDEX idx_abuse_status_created (status, created_at),
+  INDEX idx_abuse_reporter_created (reporter_student_id, created_at),
+  INDEX idx_abuse_target_status (target_type, target_id, status)
 );
 
 CREATE TABLE IF NOT EXISTS system_message (

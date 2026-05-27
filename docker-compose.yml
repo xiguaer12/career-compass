@@ -62,6 +62,9 @@ services:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-career_compass}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
       SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-career_compass}
       SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:-career_compass_pwd}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-career_compass_redis_pwd}
     volumes:
       - ./uploads/community:/app/uploads/community
     ports:
