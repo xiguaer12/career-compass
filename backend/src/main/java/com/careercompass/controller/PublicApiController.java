@@ -51,9 +51,29 @@ public class PublicApiController {
     return ApiResponse.message("验证码已发送", service.sendRegisterCode(request));
   }
 
+  @PostMapping("/auth/login-code")
+  public ApiResponse<EmailCodeResult> sendLoginCode(@RequestBody EmailCodeRequest request) {
+    return ApiResponse.message("验证码已发送", service.sendLoginCode(request));
+  }
+
   @PostMapping("/auth/login")
   public ApiResponse<Session> login(@RequestBody AuthRequest request) {
     return ApiResponse.message("登录成功", service.login(request));
+  }
+
+  @PostMapping("/auth/login-by-code")
+  public ApiResponse<Session> loginByCode(@RequestBody AuthRequest request) {
+    return ApiResponse.message("登录成功", service.loginByCode(request));
+  }
+
+  @PostMapping("/auth/password-reset-code")
+  public ApiResponse<EmailCodeResult> sendPasswordResetCode(@RequestBody EmailCodeRequest request) {
+    return ApiResponse.message("验证码已发送", service.sendPasswordResetCode(request));
+  }
+
+  @PostMapping("/auth/reset-password")
+  public ApiResponse<Map<String, Object>> resetPassword(@RequestBody PasswordResetRequest request) {
+    return ApiResponse.message("密码已重置，请使用新密码登录", service.resetPassword(request));
   }
 
   @GetMapping("/me")

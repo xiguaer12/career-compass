@@ -8,6 +8,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -263,17 +264,52 @@ public class CompassService {
     return emailVerificationService.sendRegisterCode(email);
   }
 
+  public EmailCodeResult sendLoginCode(EmailCodeRequest request) {
+    String email = registeredStudentEmail(request);
+    return emailVerificationService.sendLoginCode(email);
+  }
+
+  public Session loginByCode(AuthRequest request) {
+    if (request == null || !StringUtils.hasText(request.email())) {
+      throw new IllegalArgumentException("邮箱不能为空");
+    }
+    String email = normalizeEmail(request.email());
+    Map<String, Object> row = studentAccountForEmail(email);
+    assertLoginAllowed(row);
+    emailVerificationService.verifyLoginCode(email, request.verificationCode());
+    long id = ((Number) row.get("id")).longValue();
+    jdbc.update("update student_account set last_login_at = current_timestamp where id = ?", id);
+    StudentProfile profile = findStudent(id).orElseThrow();
+    return new Session(security.issueToken(id, email, "student"), "student", profile.status(), profile);
+  }
+
+  public EmailCodeResult sendPasswordResetCode(EmailCodeRequest request) {
+    String email = registeredStudentEmail(request);
+    return emailVerificationService.sendPasswordResetCode(email);
+  }
+
+  public Map<String, Object> resetPassword(PasswordResetRequest request) {
+    if (request == null || !StringUtils.hasText(request.email())) {
+      throw new IllegalArgumentException("邮箱不能为空");
+    }
+    String email = normalizeEmail(request.email());
+    Map<String, Object> row = studentAccountForEmail(email);
+    emailVerificationService.verifyPasswordResetCode(email, request.verificationCode());
+    validatePassword(request.newPassword());
+    long id = ((Number) row.get("id")).longValue();
+    jdbc.update(
+        "update student_account set password_hash = ? where id = ?",
+        security.hashPassword(request.newPassword()),
+        id
+    );
+    audit("student:" + email, "RESET_PASSWORD", "student_account", String.valueOf(id), Map.of("email", email));
+    return Map.of("studentId", id, "updatedAt", Instant.now().toString());
+  }
+
   public Session login(AuthRequest request) {
     validateAuth(request);
     String email = normalizeEmail(request.email());
-    List<Map<String, Object>> rows = jdbc.queryForList(
-        "select id, password_hash, status, banned_until from student_account where email = ?",
-        email
-    );
-    if (rows.isEmpty()) {
-      throw new IllegalArgumentException("账号或密码错误");
-    }
-    Map<String, Object> row = rows.getFirst();
+    Map<String, Object> row = studentAccountForEmail(email, "账号或密码错误");
     assertLoginAllowed(row);
     long id = ((Number) row.get("id")).longValue();
     if (!security.verifyPassword(request.password(), String.valueOf(row.get("password_hash")))) {
@@ -2334,15 +2370,25 @@ public class CompassService {
           continue;
         }
         Map<String, Object> fallback = fallbackCrawlCandidate(source, page);
-        Map<String, Object> parsed = llmClient.summarizeCrawlCandidate(
-            sourceField(source, "name", "公开来源"),
-            sourceField(source, "source_type", "公开来源"),
-            sourceField(source, "path", "就业"),
-            page.url(),
-            page.title(),
-            page.text(),
-            fallback
-        );
+        Map<String, Object> parsed = fallback;
+        try {
+          parsed = llmClient.summarizeCrawlCandidate(
+              sourceField(source, "name", "公开来源"),
+              sourceField(source, "source_type", "公开来源"),
+              sourceField(source, "path", "就业"),
+              page.url(),
+              page.title(),
+              page.text(),
+              fallback
+          );
+        } catch (Exception exception) {
+          fetchErrors.add(page.url() + "：AI 解析失败，已使用规则兜底候选（" + trimText(valueOr(exception.getMessage(), "解析失败"), 120) + "）");
+          audit(actor, "FALLBACK_CRAWL_PARSE", "data_source", String.valueOf(sourceId), Map.of(
+              "taskId", taskId,
+              "url", page.url(),
+              "reason", trimText(valueOr(exception.getMessage(), "AI 解析失败"), 240)
+          ));
+        }
         jdbc.update(
             """
             insert into crawl_candidate (source_id, task_id, raw_url, parsed_json, review_status, crawled_at, parsed_at)
@@ -2358,6 +2404,9 @@ public class CompassService {
       String resultMessage = created > 0
           ? "已生成 " + created + " 条待审核候选" + (skipped > 0 ? "，跳过重复 " + skipped + " 条" : "")
           : "未发现新的候选内容" + (skipped > 0 ? "，已跳过重复 " + skipped + " 条" : "");
+      if (!fetchErrors.isEmpty()) {
+        resultMessage = trimText(resultMessage + "；部分页面已跳过或降级：" + String.join("；", fetchErrors), 500);
+      }
       jdbc.update("update crawl_task set status = '已完成', result_message = ?, finished_at = current_timestamp where id = ?", resultMessage, taskId);
       jdbc.update("update data_source set last_crawl_at = current_timestamp where id = ?", sourceId);
       audit(actor, "TRIGGER_CRAWL", "data_source", String.valueOf(sourceId), Map.of("taskId", taskId, "created", created, "skipped", skipped, "entryUrl", entryPage.url()));
@@ -2817,7 +2866,7 @@ public class CompassService {
 
   private CrawledPage fetchCrawlPage(String sourceUrl) throws Exception {
     URI uri = validateCrawlUri(sourceUrl);
-    HttpResponse<String> response = null;
+    HttpResponse<byte[]> response = null;
     List<String> userAgents = List.of(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "CareerCompassBot/1.0 (+reviewed education information crawler)"
@@ -2826,7 +2875,7 @@ public class CompassService {
       URI current = uri;
       for (int redirects = 0; redirects < 4; redirects++) {
         HttpRequest request = crawlRequest(current, userAgent);
-        response = crawlHttpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        response = crawlHttpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
         if (response.statusCode() < 300 || response.statusCode() >= 400) break;
         Optional<String> location = response.headers().firstValue("location");
         if (location.isEmpty()) break;
@@ -2844,7 +2893,7 @@ public class CompassService {
           : "";
       throw new IllegalStateException("来源返回 HTTP " + response.statusCode() + deniedHint);
     }
-    String body = response.body();
+    String body = decodeCrawlBody(response);
     if (!StringUtils.hasText(body)) {
       throw new IllegalStateException("来源页面为空");
     }
@@ -2871,6 +2920,67 @@ public class CompassService {
         .header("Upgrade-Insecure-Requests", "1")
         .GET()
         .build();
+  }
+
+  private String decodeCrawlBody(HttpResponse<byte[]> response) {
+    byte[] bytes = response.body();
+    if (bytes == null || bytes.length == 0) return "";
+    String charset = response.headers()
+        .firstValue("content-type")
+        .map(this::charsetFromContentType)
+        .orElse("");
+    if (!StringUtils.hasText(charset)) {
+      charset = charsetFromHtml(new String(bytes, StandardCharsets.ISO_8859_1));
+    }
+    List<Charset> candidates = new ArrayList<>();
+    if (StringUtils.hasText(charset)) {
+      try {
+        candidates.add(Charset.forName(normalizeCharsetName(charset)));
+      } catch (Exception ignored) {
+        // Fall through to common encodings.
+      }
+    }
+    candidates.add(StandardCharsets.UTF_8);
+    candidates.add(Charset.forName("GB18030"));
+    candidates.add(StandardCharsets.ISO_8859_1);
+    String best = "";
+    int bestScore = Integer.MIN_VALUE;
+    for (Charset candidate : candidates.stream().distinct().toList()) {
+      String decoded = new String(bytes, candidate);
+      int score = decoded.length() - decoded.replace("\uFFFD", "").length();
+      int chineseSignals = 0;
+      for (String keyword : List.of("招生", "报名", "招聘", "就业", "研究生", "公务员", "公告", "通知")) {
+        if (decoded.contains(keyword)) chineseSignals += 5;
+      }
+      int currentScore = chineseSignals - score * 20;
+      if (currentScore > bestScore) {
+        bestScore = currentScore;
+        best = decoded;
+      }
+    }
+    return best;
+  }
+
+  private String charsetFromContentType(String contentType) {
+    if (!StringUtils.hasText(contentType)) return "";
+    Matcher matcher = Pattern.compile("(?i)charset\\s*=\\s*['\"]?([^;\\s'\"]+)").matcher(contentType);
+    return matcher.find() ? matcher.group(1) : "";
+  }
+
+  private String charsetFromHtml(String html) {
+    if (!StringUtils.hasText(html)) return "";
+    Matcher matcher = Pattern.compile("(?is)<meta[^>]+charset\\s*=\\s*['\"]?([^\\s\"'>/;]+)").matcher(html);
+    if (matcher.find()) return matcher.group(1);
+    matcher = Pattern.compile("(?is)<meta[^>]+content\\s*=\\s*['\"][^'\"]*charset\\s*=\\s*([^\\s\"'>/;]+)").matcher(html);
+    return matcher.find() ? matcher.group(1) : "";
+  }
+
+  private String normalizeCharsetName(String charset) {
+    String value = charset.trim().toLowerCase(Locale.ROOT);
+    if (value.equals("gb2312") || value.equals("gbk") || value.equals("gb_2312-80")) {
+      return "GB18030";
+    }
+    return charset.trim();
   }
 
   private URI validateCrawlUri(String sourceUrl) {
@@ -4118,6 +4228,31 @@ public class CompassService {
     String email = normalizeEmail(request.email());
     validateEmailDomain(email);
     validatePassword(request.password());
+  }
+
+  private String registeredStudentEmail(EmailCodeRequest request) {
+    if (request == null || !StringUtils.hasText(request.email())) {
+      throw new IllegalArgumentException("邮箱不能为空");
+    }
+    String email = normalizeEmail(request.email());
+    validateEmailDomain(email);
+    studentAccountForEmail(email);
+    return email;
+  }
+
+  private Map<String, Object> studentAccountForEmail(String email) {
+    return studentAccountForEmail(email, "该邮箱尚未注册，请先完成注册");
+  }
+
+  private Map<String, Object> studentAccountForEmail(String email, String missingMessage) {
+    List<Map<String, Object>> rows = jdbc.queryForList(
+        "select id, password_hash, status, banned_until from student_account where email = ? and canceled_at is null",
+        email
+    );
+    if (rows.isEmpty()) {
+      throw new IllegalArgumentException(missingMessage);
+    }
+    return rows.getFirst();
   }
 
   private void validatePassword(String password) {

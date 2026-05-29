@@ -382,6 +382,23 @@ const navItems: Array<{ key: TabKey; label: string; icon: React.ComponentType<{ 
   { key: "me", label: "个人", icon: UserRound }
 ];
 
+const tabRoutes: Record<TabKey, string> = {
+  home: "/",
+  workspace: "/workspace",
+  report: "/report",
+  paths: "/paths",
+  charts: "/charts",
+  community: "/community",
+  messages: "/messages",
+  me: "/me"
+};
+
+function tabFromPath(pathname: string): TabKey {
+  const normalized = pathname.replace(/\/+$/, "") || "/";
+  const match = Object.entries(tabRoutes).find(([, route]) => route === normalized);
+  return match ? (match[0] as TabKey) : "home";
+}
+
 const compactStats = [
   { key: "registeredStudents", label: "注册学生", value: "—", trend: "等待数据库", icon: Users },
   { key: "completionRate", label: "测评完成率", value: "—", trend: "等待数据库", icon: CheckCircle2 },
@@ -391,7 +408,7 @@ const compactStats = [
 
 function App() {
   const isAdminRoute = window.location.pathname.replace(/\/+$/, "") === "/admin";
-  const [activeTab, setActiveTab] = useState<TabKey>("home");
+  const [activeTab, setActiveTab] = useState<TabKey>(() => tabFromPath(window.location.pathname));
   const [apiStatus, setApiStatus] = useState<"checking" | "up" | "down">("checking");
   const [session, setSession] = useState<Session | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
@@ -430,6 +447,19 @@ function App() {
       .catch(() => localStorage.removeItem("career-compass-token"));
   }, [isAdminRoute]);
 
+  useEffect(() => {
+    if (isAdminRoute) return;
+    const syncRoute = () => {
+      const nextTab = tabFromPath(window.location.pathname);
+      setActiveTab(nextTab);
+      setNotice("");
+      resetScopedNavigation(nextTab);
+    };
+    window.addEventListener("popstate", syncRoute);
+    syncRoute();
+    return () => window.removeEventListener("popstate", syncRoute);
+  }, [isAdminRoute]);
+
   async function refreshReportState(token: string) {
     const [latest, latestTask] = await Promise.all([
       studentApi.latestReport(token),
@@ -461,6 +491,26 @@ function App() {
     }
   }
 
+  function resetScopedNavigation(tab: TabKey) {
+    if (tab !== "charts") setChartToOpen(null);
+    if (tab !== "community") {
+      setCommunityPostToOpen(null);
+      setCommunityDetailOnly(false);
+    }
+  }
+
+  function navigateToTab(tab: TabKey, options: { keepScopedState?: boolean; replace?: boolean } = {}) {
+    const nextUrl = tabRoutes[tab];
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (currentUrl !== nextUrl) {
+      if (options.replace) window.history.replaceState(null, "", nextUrl);
+      else window.history.pushState(null, "", nextUrl);
+    }
+    setActiveTab(tab);
+    setNotice("");
+    if (!options.keepScopedState) resetScopedNavigation(tab);
+  }
+
   function logout() {
     localStorage.removeItem("career-compass-token");
     setSession(null);
@@ -488,22 +538,19 @@ function App() {
           {navItems.map((item) => {
             const Icon = item.icon;
             return (
-              <button
+              <a
                 key={item.key}
+                href={tabRoutes[item.key]}
                 className={activeTab === item.key ? "nav-item active" : "nav-item"}
-                onClick={() => {
-                  if (item.key === "charts") setChartToOpen(null);
-                  if (item.key === "community") {
-                    setCommunityPostToOpen(null);
-                    setCommunityDetailOnly(false);
-                  }
-                  setActiveTab(item.key);
+                onClick={(event) => {
+                  event.preventDefault();
+                  navigateToTab(item.key);
                 }}
                 title={item.label}
               >
                 <Icon size={18} />
                 <span>{item.label}</span>
-              </button>
+              </a>
             );
           })}
         </nav>
@@ -518,9 +565,9 @@ function App() {
       <main className="main">
         {notice && <div className="toast">{notice}</div>}
         {authOpen && <AuthPanel onClose={() => setAuthOpen(false)} onSession={saveSession} />}
-        {activeTab === "home" && <HomeView report={report} onNavigate={setActiveTab} />}
+        {activeTab === "home" && <HomeView report={report} onNavigate={navigateToTab} />}
         {activeTab === "workspace" && <WorkspaceView session={session} onLogin={() => setAuthOpen(true)} onReport={setReport} onTask={updateReportTask} setNotice={setNotice} />}
-        {activeTab === "report" && <ReportView report={report} task={reportTask} session={session} onLogin={() => setAuthOpen(true)} onReport={setReport} onTask={updateReportTask} onNavigate={setActiveTab} />}
+        {activeTab === "report" && <ReportView report={report} task={reportTask} session={session} onLogin={() => setAuthOpen(true)} onReport={setReport} onTask={updateReportTask} onNavigate={navigateToTab} />}
         {activeTab === "paths" && (
           <PathsView
             report={report}
@@ -530,12 +577,12 @@ function App() {
             onSelectedPathKeyChange={setSelectedPathKey}
             onOpenChart={(chart) => {
               setChartToOpen(chart.id);
-              setActiveTab("charts");
+              navigateToTab("charts", { keepScopedState: true });
             }}
             onOpenCommunityPost={(post) => {
               setCommunityPostToOpen(post.id);
               setCommunityDetailOnly(true);
-              setActiveTab("community");
+              navigateToTab("community", { keepScopedState: true });
             }}
           />
         )}
@@ -545,7 +592,7 @@ function App() {
             openChartId={chartToOpen}
             onBackToPaths={chartToOpen ? () => {
               setChartToOpen(null);
-              setActiveTab("paths");
+              navigateToTab("paths", { keepScopedState: true });
             } : undefined}
           />
         )}
@@ -560,7 +607,7 @@ function App() {
             onBackToPaths={communityDetailOnly ? () => {
               setCommunityPostToOpen(null);
               setCommunityDetailOnly(false);
-              setActiveTab("paths");
+              navigateToTab("paths", { keepScopedState: true });
             } : undefined}
           />
         )}
@@ -629,8 +676,10 @@ function AdminShell({ apiStatus }: { apiStatus: "checking" | "up" | "down" }) {
   );
 }
 
+type AuthMode = "login" | "code-login" | "register" | "reset";
+
 function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (session: Session) => void }) {
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const [mode, setMode] = useState<AuthMode>("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -649,6 +698,9 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
   const [codeCooldown, setCodeCooldown] = useState(0);
   const [showPassword, setShowPassword] = useState(false);
   const registerMajors = majorsForCollege(registerProfile.college);
+  const requiresCode = mode === "register" || mode === "code-login" || mode === "reset";
+  const requiresPassword = mode === "login" || mode === "register" || mode === "reset";
+  const modalTitle = mode === "register" ? "学校邮箱注册" : mode === "code-login" ? "邮箱验证码登录" : mode === "reset" ? "找回密码" : "学生登录";
 
   useEffect(() => {
     if (codeCooldown <= 0) return;
@@ -660,12 +712,26 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
     setRegisterProfile((current) => ({ ...current, ...patch }));
   }
 
-  async function sendRegisterCode() {
+  function switchMode(nextMode: AuthMode) {
+    setMode(nextMode);
+    setError("");
+    setCodeMessage("");
+    setCodeCooldown(0);
+    setVerificationCode("");
+    setPassword("");
+    setConfirmPassword("");
+  }
+
+  async function sendAuthCode() {
     setError("");
     setCodeMessage("");
     setCodeLoading(true);
     try {
-      const result = await authApi.sendRegisterCode(email);
+      const result = mode === "register"
+        ? await authApi.sendRegisterCode(email)
+        : mode === "code-login"
+          ? await authApi.sendLoginCode(email)
+          : await authApi.sendPasswordResetCode(email);
       setCodeCooldown(result.cooldownSeconds || 60);
       setCodeMessage(`验证码已发送至 ${result.email}，${Math.floor((result.expiresInSeconds || 600) / 60)} 分钟内有效。`);
     } catch (exception) {
@@ -681,6 +747,22 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
     try {
       if (mode === "login") {
         onSession(await authApi.login(email, password));
+      } else if (mode === "code-login") {
+        onSession(await authApi.loginByCode(email, verificationCode));
+      } else if (mode === "reset") {
+        if (password !== confirmPassword) {
+          setPassword("");
+          setConfirmPassword("");
+          setError("两次输入的新密码不一致，请重新输入");
+          return;
+        }
+        await authApi.resetPassword(email, verificationCode, password);
+        setError("");
+        setCodeMessage("密码已重置，请使用新密码登录。");
+        setPassword("");
+        setConfirmPassword("");
+        setVerificationCode("");
+        setMode("login");
       } else {
         if (password !== confirmPassword) {
           setPassword("");
@@ -708,39 +790,61 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
         <div className="section-title">
           <div>
             <UserRoundCheck size={18} />
-            <h3>{mode === "login" ? "学生登录" : "学校邮箱注册"}</h3>
+            <h3>{modalTitle}</h3>
           </div>
           <button className="text-button" onClick={onClose}>关闭</button>
         </div>
         <div className="segmented auth-switch">
-          <button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>登录</button>
-          <button className={mode === "register" ? "active" : ""} onClick={() => {
-            setMode("register");
-            setCodeMessage("");
-          }}>注册</button>
+          <button className={mode === "login" ? "active" : ""} onClick={() => switchMode("login")}>密码登录</button>
+          <button className={mode === "code-login" ? "active" : ""} onClick={() => switchMode("code-login")}>验证码登录</button>
+          <button className={mode === "register" ? "active" : ""} onClick={() => switchMode("register")}>注册</button>
         </div>
         <label>
           <span>学校邮箱</span>
           <input value={email} onChange={(event) => setEmail(event.target.value)} />
         </label>
-        <label>
-          <span>密码</span>
-          <div className="inline-control">
+        {requiresPassword && (
+          <label>
+            <span>{mode === "reset" ? "新密码" : "密码"}</span>
+            <div className="inline-control">
+              <input
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+              <button
+                className="icon-button"
+                title={showPassword ? "隐藏密码" : "显示密码"}
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </label>
+        )}
+        {requiresCode && mode !== "register" && (
+          <label>
+            <span>邮箱验证码</span>
+            <div className="inline-control verification-code-control">
+              <input value={verificationCode} maxLength={6} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))} />
+              <button className="secondary-button" type="button" onClick={sendAuthCode} disabled={codeLoading || codeCooldown > 0}>
+                {codeLoading ? "发送中" : codeCooldown > 0 ? `${codeCooldown}s` : "发送验证码"}
+              </button>
+            </div>
+            {codeMessage && <small className="field-hint">{codeMessage}</small>}
+          </label>
+        )}
+        {mode === "reset" && (
+          <label>
+            <span>确认新密码</span>
             <input
               type={showPassword ? "text" : "password"}
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
             />
-            <button
-              className="icon-button"
-              title={showPassword ? "隐藏密码" : "显示密码"}
-              type="button"
-              onClick={() => setShowPassword(!showPassword)}
-            >
-              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
-          </div>
-        </label>
+          </label>
+        )}
         {mode === "register" && (
           <div className="register-profile-grid">
             <label className="full-span">
@@ -755,7 +859,7 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
               <span>邮箱验证码</span>
               <div className="inline-control verification-code-control">
                 <input value={verificationCode} maxLength={6} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))} />
-                <button className="secondary-button" type="button" onClick={sendRegisterCode} disabled={codeLoading || codeCooldown > 0}>
+                <button className="secondary-button" type="button" onClick={sendAuthCode} disabled={codeLoading || codeCooldown > 0}>
                   {codeLoading ? "发送中" : codeCooldown > 0 ? `${codeCooldown}s` : "发送验证码"}
                 </button>
               </div>
@@ -789,9 +893,14 @@ function AuthPanel({ onClose, onSession }: { onClose: () => void; onSession: (se
             </label>
           </div>
         )}
+        {mode === "login" && (
+          <button className="text-button auth-help-button" type="button" onClick={() => switchMode("reset")}>
+            忘记密码？
+          </button>
+        )}
         {error && <p className="form-error">{error}</p>}
         <button className="primary-button full-width" onClick={submit} disabled={loading}>
-          {loading ? "处理中..." : mode === "login" ? "登录" : "验证注册并开始访谈"}
+          {loading ? "处理中..." : mode === "login" ? "登录" : mode === "code-login" ? "验证码登录" : mode === "reset" ? "重置密码" : "验证注册并开始访谈"}
         </button>
       </section>
     </div>

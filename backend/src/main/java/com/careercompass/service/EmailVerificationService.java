@@ -47,13 +47,26 @@ public class EmailVerificationService {
   }
 
   public EmailCodeResult sendRegisterCode(String email) {
+    return sendCode(email, "register", "注册 Career Compass 职业规划网站");
+  }
+
+  public EmailCodeResult sendLoginCode(String email) {
+    return sendCode(email, "login", "使用邮箱验证码登录 Career Compass");
+  }
+
+  public EmailCodeResult sendPasswordResetCode(String email) {
+    return sendCode(email, "password-reset", "重置 Career Compass 登录密码");
+  }
+
+  private EmailCodeResult sendCode(String email, String purpose, String actionText) {
     String normalized = normalizeEmail(email);
     if (!verificationEnabled) {
       return new EmailCodeResult(maskEmail(normalized), 0, 0);
     }
     ensureMailConfigured();
     Instant now = Instant.now();
-    CodeEntry current = codes.get(normalized);
+    String key = codeKey(normalized, purpose);
+    CodeEntry current = codes.get(key);
     if (current != null && current.lastSentAt().plusSeconds(cooldownSeconds).isAfter(now)) {
       long waitSeconds = Duration.between(now, current.lastSentAt().plusSeconds(cooldownSeconds)).toSeconds();
       throw new IllegalArgumentException("验证码发送过于频繁，请 " + Math.max(1, waitSeconds) + " 秒后再试");
@@ -68,8 +81,8 @@ public class EmailVerificationService {
     }
 
     String code = String.format(Locale.ROOT, "%06d", random.nextInt(1_000_000));
-    sendMail(normalized, code);
-    codes.put(normalized, new CodeEntry(
+    sendMail(normalized, code, actionText);
+    codes.put(key, new CodeEntry(
         code,
         now.plus(Duration.ofMinutes(ttlMinutes)),
         now,
@@ -81,27 +94,40 @@ public class EmailVerificationService {
   }
 
   public void verifyRegisterCode(String email, String code) {
+    verifyCode(email, code, "register");
+  }
+
+  public void verifyLoginCode(String email, String code) {
+    verifyCode(email, code, "login");
+  }
+
+  public void verifyPasswordResetCode(String email, String code) {
+    verifyCode(email, code, "password-reset");
+  }
+
+  private void verifyCode(String email, String code, String purpose) {
     if (!verificationEnabled) return;
     String normalized = normalizeEmail(email);
     if (!StringUtils.hasText(code)) {
       throw new IllegalArgumentException("请输入邮箱验证码");
     }
-    CodeEntry current = codes.get(normalized);
+    String key = codeKey(normalized, purpose);
+    CodeEntry current = codes.get(key);
     if (current == null) {
       throw new IllegalArgumentException("请先获取邮箱验证码");
     }
     Instant now = Instant.now();
     if (current.expiresAt().isBefore(now)) {
-      codes.remove(normalized);
+      codes.remove(key);
       throw new IllegalArgumentException("验证码已过期，请重新发送");
     }
     if (!current.code().equals(code.trim())) {
       int attempts = current.attempts() + 1;
       if (attempts >= maxAttempts) {
-        codes.remove(normalized);
+        codes.remove(key);
         throw new IllegalArgumentException("验证码错误次数过多，请重新发送");
       }
-      codes.put(normalized, new CodeEntry(
+      codes.put(key, new CodeEntry(
           current.code(),
           current.expiresAt(),
           current.lastSentAt(),
@@ -111,10 +137,10 @@ public class EmailVerificationService {
       ));
       throw new IllegalArgumentException("验证码错误，还可尝试 " + (maxAttempts - attempts) + " 次");
     }
-    codes.remove(normalized);
+    codes.remove(key);
   }
 
-  private void sendMail(String email, String code) {
+  private void sendMail(String email, String code, String actionText) {
     SimpleMailMessage message = new SimpleMailMessage();
     message.setFrom(mailUsername);
     message.setTo(email);
@@ -122,10 +148,10 @@ public class EmailVerificationService {
     message.setText("""
         你好：
 
-        你正在注册 Career Compass 职业规划网站，本次学校邮箱验证码为：%s
+        你正在%s，本次学校邮箱验证码为：%s
 
         验证码 %d 分钟内有效。若非本人操作，请忽略本邮件。
-        """.formatted(code, ttlMinutes));
+        """.formatted(actionText, code, ttlMinutes));
     mailSender.send(message);
   }
 
@@ -146,6 +172,10 @@ public class EmailVerificationService {
     int at = email.indexOf('@');
     if (at <= 2) return email;
     return email.substring(0, 2) + "***" + email.substring(at);
+  }
+
+  private String codeKey(String email, String purpose) {
+    return (StringUtils.hasText(purpose) ? purpose.trim().toLowerCase(Locale.ROOT) : "register") + ":" + email;
   }
 
   private record CodeEntry(

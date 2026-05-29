@@ -30,9 +30,11 @@ public final class Dtos {
       String nickname
   ) {}
 
-  public record EmailCodeRequest(String email) {}
+  public record EmailCodeRequest(String email, String purpose) {}
 
   public record EmailCodeResult(String email, int expiresInSeconds, int cooldownSeconds) {}
+
+  public record PasswordResetRequest(String email, String verificationCode, String newPassword) {}
 
   public record CancelAccountRequest(String reason, Boolean confirmed) {}
 

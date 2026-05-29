@@ -364,10 +364,18 @@ export async function api<T>(path: string, options: RequestInit = {}, token?: st
 export const authApi = {
   sendRegisterCode: (email: string) =>
     api<EmailCodeResult>("/api/auth/register-code", { method: "POST", body: JSON.stringify({ email }) }),
+  sendLoginCode: (email: string) =>
+    api<EmailCodeResult>("/api/auth/login-code", { method: "POST", body: JSON.stringify({ email }) }),
+  sendPasswordResetCode: (email: string) =>
+    api<EmailCodeResult>("/api/auth/password-reset-code", { method: "POST", body: JSON.stringify({ email }) }),
   register: (profile: Partial<StudentProfile> & { email: string; password: string; verificationCode?: string }) =>
     api<Session>("/api/auth/register", { method: "POST", body: JSON.stringify(profile) }),
   login: (email: string, password: string) =>
     api<Session>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+  loginByCode: (email: string, verificationCode: string) =>
+    api<Session>("/api/auth/login-by-code", { method: "POST", body: JSON.stringify({ email, verificationCode }) }),
+  resetPassword: (email: string, verificationCode: string, newPassword: string) =>
+    api<Record<string, unknown>>("/api/auth/reset-password", { method: "POST", body: JSON.stringify({ email, verificationCode, newPassword }) }),
   me: (token: string) => api<StudentProfile>("/api/me", {}, token)
 };
 

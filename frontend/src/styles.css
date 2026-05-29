@@ -214,6 +214,7 @@ textarea:focus-visible {
 .nav-item {
   width: 100%;
   height: 44px;
+  border: 0;
   border-radius: 8px;
   display: flex;
   align-items: center;
@@ -222,6 +223,8 @@ textarea:focus-visible {
   color: #475569;
   background: transparent;
   cursor: pointer;
+  font: inherit;
+  text-decoration: none;
   transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
 }
 
@@ -627,6 +630,13 @@ textarea:focus-visible {
 
 .auth-switch {
   width: 100%;
+}
+
+.auth-help-button {
+  justify-self: end;
+  min-height: 28px;
+  padding: 0;
+  background: transparent;
 }
 
 .inline-control,
