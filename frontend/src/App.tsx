@@ -77,6 +77,7 @@ import {
   type CommunityComment,
   type ContentItem,
   type CrawlCandidateItem,
+  type CrawlTaskItem,
   type AiReport,
   type CrawlSource,
   type Dashboard,
@@ -371,6 +372,15 @@ function parseJsonRecord(text: string, label: string) {
   }
 }
 
+function safeJsonRecord(text: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(text || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
 const navItems: Array<{ key: TabKey; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { key: "home", label: "首页", icon: LayoutDashboard },
   { key: "workspace", label: "工作台", icon: ClipboardList },
@@ -419,6 +429,11 @@ function App() {
   const [communityDetailOnly, setCommunityDetailOnly] = useState(false);
   const [selectedPathKey, setSelectedPathKey] = useState("");
   const [notice, setNotice] = useState("");
+  const noticeTone = /失败|错误|不可|过期|繁忙|请稍后|离线/.test(notice)
+    ? "error"
+    : /仍在|等待|尚未|可能|提醒/.test(notice)
+      ? "warning"
+      : "success";
 
   useEffect(() => {
     let mounted = true;
@@ -446,6 +461,12 @@ function App() {
       })
       .catch(() => localStorage.removeItem("career-compass-token"));
   }, [isAdminRoute]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), noticeTone === "error" ? 6200 : 4200);
+    return () => window.clearTimeout(timer);
+  }, [notice, noticeTone]);
 
   useEffect(() => {
     if (isAdminRoute) return;
@@ -563,7 +584,7 @@ function App() {
       </header>
 
       <main className="main">
-        {notice && <div className="toast">{notice}</div>}
+        {notice && <div className={`toast ${noticeTone}`} role="status">{notice}</div>}
         {authOpen && <AuthPanel onClose={() => setAuthOpen(false)} onSession={saveSession} />}
         {activeTab === "home" && <HomeView report={report} onNavigate={navigateToTab} />}
         {activeTab === "workspace" && <WorkspaceView session={session} onLogin={() => setAuthOpen(true)} onReport={setReport} onTask={updateReportTask} setNotice={setNotice} />}
@@ -1822,6 +1843,17 @@ function ReportView({
           </aside>
           <div className="report-thread-main">
         <div ref={reportExportRef} className="report-export-area report-thread-message">
+          <section className="report-export-cover">
+            <span>Career Compass AI Report</span>
+            <h2>本科应届毕业生三路径规划报告</h2>
+            <div className="report-export-meta">
+              <b>报告编号 #{currentReport.id}</b>
+              <b>{currentReport.reportVersion}</b>
+              <b>生成 {formatAdminTime(currentReport.generatedAt)}</b>
+              <b>最高匹配 {scoreRows[0]?.name || "待综合判断"} {scoreRows[0]?.score ? `${scoreRows[0].score} 分` : ""}</b>
+            </div>
+            <p>{currentReport.summary}</p>
+          </section>
       {(narrativeReport || studentProfile) && (
         <section className="surface report-narrative">
           <SectionTitle icon={FileText} title="综合报告正文" />
@@ -1912,6 +1944,11 @@ function ReportView({
       </section>
         </>
       )}
+          <section className="report-export-footer">
+            <strong>免责声明</strong>
+            <p>{currentReport.disclaimer || "AI 报告仅供辅助决策，不替代学生最终选择。"}</p>
+            <span>导出时间：{new Date().toLocaleString("zh-CN")}</span>
+          </section>
         </div>
         {exportError && <p className="form-error">{exportError}</p>}
       <section className="surface ai-chat">
@@ -3095,6 +3132,7 @@ function AdminView() {
   const [students, setStudents] = useState<StudentAdminItem[]>([]);
   const [contents, setContents] = useState<ContentItem[]>([]);
   const [candidates, setCandidates] = useState<CrawlCandidateItem[]>([]);
+  const [crawlTasks, setCrawlTasks] = useState<CrawlTaskItem[]>([]);
   const [charts, setCharts] = useState<ChartItem[]>([]);
   const [pathConfigs, setPathConfigs] = useState<PathConfigItem[]>([]);
   const [tags, setTags] = useState<TagItem[]>([]);
@@ -3122,15 +3160,18 @@ function AdminView() {
   const [aiForm, setAiForm] = useState({ id: undefined as number | undefined, configType: "prompt", version: "PROMPT-2026.06", title: "追问提示词", content: "围绕报告正文和访谈素材回答追问，不输出录取、上岸、就业结果承诺。", status: "草稿" });
   const [candidateStatus, setCandidateStatus] = useState("待审核");
   const [candidateKeyword, setCandidateKeyword] = useState("");
+  const [crawlTaskStatus, setCrawlTaskStatus] = useState("全部");
+  const [crawlTaskType, setCrawlTaskType] = useState("全部");
   const [contentKeyword, setContentKeyword] = useState("");
   const [sourceKeyword, setSourceKeyword] = useState("");
   const [studentKeyword, setStudentKeyword] = useState("");
   const [postReviewStatus, setPostReviewStatus] = useState("待审核");
   const [expandedReportId, setExpandedReportId] = useState<number | null>(null);
+  const adminNoticeTone = /失败|错误|不可|过期|请重新/.test(adminNotice) ? "error" : "success";
 
   async function refreshAdmin(token = admin?.token) {
     if (!token) return;
-    const [nextDashboard, nextSources, nextPosts, nextStudents, nextCommunityUsers, nextContents, nextCandidates, nextCharts, nextPaths, nextTags, nextAiConfigs, nextReports, nextComments] = await Promise.all([
+    const [nextDashboard, nextSources, nextPosts, nextStudents, nextCommunityUsers, nextContents, nextCandidates, nextCrawlTasks, nextCharts, nextPaths, nextTags, nextAiConfigs, nextReports, nextComments] = await Promise.all([
       adminApi.dashboard(token),
       adminApi.sources(token),
       adminApi.posts(token),
@@ -3138,6 +3179,7 @@ function AdminView() {
       adminApi.communityUsers(token),
       adminApi.contents(token),
       adminApi.candidates(token),
+      adminApi.crawlTasks(token),
       adminApi.charts(token),
       adminApi.paths(token),
       adminApi.tags(token),
@@ -3152,6 +3194,7 @@ function AdminView() {
     setCommunityUsers(nextCommunityUsers);
     setContents(nextContents);
     setCandidates(nextCandidates);
+    setCrawlTasks(nextCrawlTasks);
     setCharts(nextCharts);
     setPathConfigs(nextPaths);
     setTags(nextTags);
@@ -3168,6 +3211,7 @@ function AdminView() {
     setCommunityUsers([]);
     setContents([]);
     setCandidates([]);
+    setCrawlTasks([]);
     setCharts([]);
     setPathConfigs([]);
     setTags([]);
@@ -3200,6 +3244,12 @@ function AdminView() {
     if (!admin?.token) return;
     refreshAdmin(admin.token).catch((exception) => handleAdminException(exception, "后台数据加载失败"));
   }, [admin?.token]);
+
+  useEffect(() => {
+    if (!adminNotice) return;
+    const timer = window.setTimeout(() => setAdminNotice(""), adminNoticeTone === "error" ? 6200 : 4200);
+    return () => window.clearTimeout(timer);
+  }, [adminNotice, adminNoticeTone]);
 
   const adminWorking = Boolean(adminBusy);
   const busyLabel = (key: string, label: string) => adminBusy === key ? "处理中" : label;
@@ -3529,6 +3579,34 @@ function AdminView() {
     setAiForm({ id: undefined, configType: "prompt", version: "", title: "", content: "", status: "草稿" });
   }
 
+  function updateAiJsonPayload(nextPayload: Record<string, unknown>) {
+    setAiForm((current) => ({
+      ...current,
+      content: JSON.stringify(nextPayload, null, 2)
+    }));
+  }
+
+  function updateAiWeight(key: string, value: number) {
+    const payload = safeJsonRecord(aiForm.content);
+    const weights = (payload.weights && typeof payload.weights === "object" && !Array.isArray(payload.weights))
+      ? payload.weights as Record<string, unknown>
+      : {};
+    updateAiJsonPayload({
+      ...payload,
+      weights: {
+        ...weights,
+        [key]: value
+      }
+    });
+  }
+
+  function updateModelParam(key: string, value: number) {
+    updateAiJsonPayload({
+      ...safeJsonRecord(aiForm.content),
+      [key]: value
+    });
+  }
+
   async function handleReport(id: number, status: string, expectedStatus?: string) {
     if (!admin) return;
     await runAdminAction(`report-${id}-${status}`, async () => {
@@ -3557,6 +3635,16 @@ function AdminView() {
       .some((value) => value.toLowerCase().includes(keyword));
     return matchesStatus && matchesKeyword;
   });
+  const visibleCrawlTasks = crawlTasks.filter((task) => {
+    const matchesStatus = crawlTaskStatus === "全部" || task.status === crawlTaskStatus;
+    const matchesType = crawlTaskType === "全部" || task.failureType === crawlTaskType;
+    return matchesStatus && matchesType;
+  });
+  const crawlTaskTypes = ["全部", ...Array.from(new Set(crawlTasks.map((task) => task.failureType).filter(Boolean)))];
+  const failedCrawlTasks = crawlTasks.filter((task) => task.status === "失败").length;
+  const certificateCrawlTasks = crawlTasks.filter((task) => task.failureType.includes("证书")).length;
+  const degradedCrawlTasks = crawlTasks.filter((task) => task.failureType.includes("降级")).length;
+  const successfulCrawlTasks = crawlTasks.filter((task) => task.status === "已完成").length;
   const visibleSources = sources.filter((source) => {
     const keyword = sourceKeyword.trim().toLowerCase();
     return !keyword || [source.name, source.url, source.type, source.path, source.status].some((value) => value.toLowerCase().includes(keyword));
@@ -3582,6 +3670,20 @@ function AdminView() {
       .some((value) => value.toLowerCase().includes(keyword));
   });
   const visibleReviewPosts = posts.filter((post) => postReviewStatus === "全部" || post.status === postReviewStatus);
+  const aiJsonPayload = safeJsonRecord(aiForm.content);
+  const aiWeightsPayload = aiJsonPayload.weights && typeof aiJsonPayload.weights === "object" && !Array.isArray(aiJsonPayload.weights)
+    ? aiJsonPayload.weights as Record<string, unknown>
+    : {};
+  const aiWeightRows = [
+    { key: "profileFit", label: "档案匹配", value: Number(aiWeightsPayload.profileFit ?? 35) },
+    { key: "interviewSignals", label: "访谈信号", value: Number(aiWeightsPayload.interviewSignals ?? 30) },
+    { key: "constraints", label: "现实约束", value: Number(aiWeightsPayload.constraints ?? 20) },
+    { key: "dataEvidence", label: "数据证据", value: Number(aiWeightsPayload.dataEvidence ?? 15) }
+  ];
+  const aiWeightTotal = aiWeightRows.reduce((sum, row) => sum + (Number.isFinite(row.value) ? row.value : 0), 0);
+  const modelTemperature = Number(aiJsonPayload.temperature ?? 0.7);
+  const modelTopP = Number(aiJsonPayload.topP ?? aiJsonPayload.top_p ?? 0.9);
+  const modelMaxTokens = Number(aiJsonPayload.maxTokens ?? aiJsonPayload.max_tokens ?? 4000);
 
   if (!admin) {
     return (
@@ -3619,7 +3721,7 @@ function AdminView() {
 
   return (
     <div className="page-stack">
-      {adminNotice && <div className="toast">{adminNotice}</div>}
+      {adminNotice && <div className={`toast ${adminNoticeTone}`} role="status">{adminNotice}</div>}
       {adminError && <div className="form-error admin-error">{adminError}</div>}
       {adminBusy && <div className="admin-feedback"><RefreshCcw size={15} />正在处理后台操作，请稍候</div>}
       <section className="metric-grid">
@@ -3840,6 +3942,12 @@ function AdminView() {
               </div>
               <textarea value={contentForm.body} onChange={(event) => setContentForm({ ...contentForm, body: event.target.value })} />
             </label>
+            <div className="content-preview-box">
+              <span>内容预览</span>
+              <strong>{contentForm.title || "未填写标题"}</strong>
+              <small>{contentForm.summary || "未填写摘要"}</small>
+              <p>{contentForm.body || "正文会在这里预览。"}</p>
+            </div>
             <button className="primary-button" onClick={saveContent} disabled={adminWorking}>{busyLabel("save-content", "保存内容")}</button>
           </div>
           <div className="surface">
@@ -4040,6 +4148,50 @@ function AdminView() {
           </div>
           <div className="surface">
             <SectionTitle icon={RefreshCcw} title="抓取与候选审核" />
+            <div className="crawl-diagnostic-grid">
+              <div>
+                <strong>{successfulCrawlTasks}</strong>
+                <span>成功任务</span>
+              </div>
+              <div>
+                <strong>{failedCrawlTasks}</strong>
+                <span>失败任务</span>
+              </div>
+              <div>
+                <strong>{certificateCrawlTasks}</strong>
+                <span>证书异常</span>
+              </div>
+              <div>
+                <strong>{degradedCrawlTasks}</strong>
+                <span>降级解析</span>
+              </div>
+            </div>
+            <div className="admin-filter-bar">
+              <div className="mini-segmented">
+                {["全部", "已完成", "失败", "抓取中"].map((status) => (
+                  <button type="button" key={status} className={crawlTaskStatus === status ? "active" : ""} onClick={() => setCrawlTaskStatus(status)}>
+                    {status}
+                  </button>
+                ))}
+              </div>
+              <select value={crawlTaskType} onChange={(event) => setCrawlTaskType(event.target.value)}>
+                {crawlTaskTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+              </select>
+              <span>{visibleCrawlTasks.length} / {crawlTasks.length} 个任务</span>
+            </div>
+            <div className="queue-list crawl-task-list">
+              {visibleCrawlTasks.slice(0, 8).map((task) => (
+                <div className="queue-item crawl-task-item" key={task.id}>
+                  <div>
+                    <strong>{task.sourceName}</strong>
+                    <span>{task.triggerType} · {task.failureType} · 开始 {formatAdminTime(task.startedAt || task.createdAt)}</span>
+                    <small>{task.resultMessage || "暂无结果消息"}</small>
+                  </div>
+                  <StatusPill status={task.status} />
+                </div>
+              ))}
+              {visibleCrawlTasks.length === 0 && <div className="empty-state">暂无匹配抓取任务</div>}
+            </div>
             <div className="admin-filter-bar">
               <div className="mini-segmented">
                 {["待审核", "已发布", "已驳回", "全部"].map((status) => (
@@ -4316,6 +4468,53 @@ function AdminView() {
                 </select>
               </label>
             </div>
+            {aiForm.configType === "algorithm_weights" && (
+              <div className="ai-config-controls">
+                <div className="config-total-line">
+                  <strong>权重合计 {aiWeightTotal}%</strong>
+                  <span className={aiWeightTotal === 100 ? "ok-text" : "warn-text"}>{aiWeightTotal === 100 ? "可保存" : "需等于 100%"}</span>
+                </div>
+                {aiWeightRows.map((row) => (
+                  <label className="slider-row" key={row.key}>
+                    <span>{row.label}</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={Number.isFinite(row.value) ? row.value : 0}
+                      onChange={(event) => updateAiWeight(row.key, Number(event.target.value))}
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={Number.isFinite(row.value) ? row.value : 0}
+                      onChange={(event) => updateAiWeight(row.key, Number(event.target.value))}
+                    />
+                  </label>
+                ))}
+              </div>
+            )}
+            {aiForm.configType === "model_params" && (
+              <div className="ai-config-controls model-param-controls">
+                <label className="slider-row">
+                  <span>temperature</span>
+                  <input type="range" min={0} max={2} step={0.1} value={Number.isFinite(modelTemperature) ? modelTemperature : 0.7} onChange={(event) => updateModelParam("temperature", Number(event.target.value))} />
+                  <input type="number" min={0} max={2} step={0.1} value={Number.isFinite(modelTemperature) ? modelTemperature : 0.7} onChange={(event) => updateModelParam("temperature", Number(event.target.value))} />
+                </label>
+                <label className="slider-row">
+                  <span>topP</span>
+                  <input type="range" min={0} max={1} step={0.05} value={Number.isFinite(modelTopP) ? modelTopP : 0.9} onChange={(event) => updateModelParam("topP", Number(event.target.value))} />
+                  <input type="number" min={0} max={1} step={0.05} value={Number.isFinite(modelTopP) ? modelTopP : 0.9} onChange={(event) => updateModelParam("topP", Number(event.target.value))} />
+                </label>
+                <label className="slider-row">
+                  <span>maxTokens</span>
+                  <input type="range" min={256} max={16000} step={128} value={Number.isFinite(modelMaxTokens) ? modelMaxTokens : 4000} onChange={(event) => updateModelParam("maxTokens", Number(event.target.value))} />
+                  <input type="number" min={256} max={16000} step={128} value={Number.isFinite(modelMaxTokens) ? modelMaxTokens : 4000} onChange={(event) => updateModelParam("maxTokens", Number(event.target.value))} />
+                </label>
+              </div>
+            )}
             <textarea value={aiForm.content} onChange={(event) => setAiForm({ ...aiForm, content: event.target.value })} />
             <button className="primary-button" onClick={saveAiConfig} disabled={adminWorking}>{busyLabel("save-ai", "保存配置")}</button>
           </div>

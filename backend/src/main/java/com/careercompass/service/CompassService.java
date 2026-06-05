@@ -13,12 +13,16 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
@@ -39,6 +43,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLHandshakeException;
+import javax.net.ssl.SSLSession;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
@@ -83,10 +94,8 @@ public class CompassService {
   private final SecurityService security;
   private final LlmClient llmClient;
   private final EmailVerificationService emailVerificationService;
-  private final HttpClient crawlHttpClient = HttpClient.newBuilder()
-      .connectTimeout(Duration.ofSeconds(12))
-      .followRedirects(HttpClient.Redirect.NORMAL)
-      .build();
+  private final HttpClient crawlHttpClient;
+  private final boolean crawlInsecureSslFallbackEnabled;
   private final ScheduledExecutorService reportExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
     Thread thread = new Thread(runnable, "career-compass-report-worker");
     thread.setDaemon(true);
@@ -119,6 +128,7 @@ public class CompassService {
       @Value("${app.auto-crawl.enabled:true}") boolean autoCrawlEnabled,
       @Value("${app.auto-crawl.initial-delay-minutes:5}") int autoCrawlInitialDelayMinutes,
       @Value("${app.auto-crawl.interval-minutes:60}") int autoCrawlIntervalMinutes,
+      @Value("${app.crawl.insecure-ssl-fallback-enabled:true}") boolean crawlInsecureSslFallbackEnabled,
       @Value("${app.chart-auto-refresh.enabled:true}") boolean chartAutoRefreshEnabled,
       @Value("${app.chart-auto-refresh.initial-delay-minutes:10}") int chartAutoRefreshInitialDelayMinutes,
       @Value("${app.chart-auto-refresh.interval-minutes:720}") int chartAutoRefreshIntervalMinutes,
@@ -135,6 +145,8 @@ public class CompassService {
     this.autoCrawlEnabled = autoCrawlEnabled;
     this.autoCrawlInitialDelayMinutes = Math.max(1, autoCrawlInitialDelayMinutes);
     this.autoCrawlIntervalMinutes = Math.max(5, autoCrawlIntervalMinutes);
+    this.crawlInsecureSslFallbackEnabled = crawlInsecureSslFallbackEnabled;
+    this.crawlHttpClient = createCrawlHttpClient();
     this.chartAutoRefreshEnabled = chartAutoRefreshEnabled;
     this.chartAutoRefreshInitialDelayMinutes = Math.max(1, chartAutoRefreshInitialDelayMinutes);
     this.chartAutoRefreshIntervalMinutes = Math.max(30, chartAutoRefreshIntervalMinutes);
@@ -1728,6 +1740,39 @@ public class CompassService {
     return jdbc.query(sql.toString(), (rs, rowNum) -> mapCandidate(rs), params.toArray());
   }
 
+  public List<CrawlTaskItem> crawlTasks(String status, Long sourceId) {
+    StringBuilder sql = new StringBuilder(
+        """
+        select t.*, s.name as source_name
+        from crawl_task t
+        join data_source s on s.id = t.source_id
+        where 1 = 1
+        """
+    );
+    List<Object> params = new ArrayList<>();
+    if (StringUtils.hasText(status) && !"全部".equals(status)) {
+      sql.append(" and t.status = ?");
+      params.add(status);
+    }
+    if (sourceId != null && sourceId > 0) {
+      sql.append(" and t.source_id = ?");
+      params.add(sourceId);
+    }
+    sql.append(" order by t.created_at desc, t.id desc limit 120");
+    return jdbc.query(sql.toString(), (rs, rowNum) -> new CrawlTaskItem(
+        rs.getLong("id"),
+        rs.getLong("source_id"),
+        rs.getString("source_name"),
+        rs.getString("trigger_type"),
+        rs.getString("status"),
+        rs.getString("result_message"),
+        classifyCrawlFailure(rs.getString("result_message")),
+        toInstantString(rs.getTimestamp("started_at")),
+        toInstantString(rs.getTimestamp("finished_at")),
+        toInstantString(rs.getTimestamp("created_at"))
+    ), params.toArray());
+  }
+
   public Map<String, Object> reviewCandidate(CrawlCandidateReviewRequest request) {
     if (request == null || request.id() <= 0 || !StringUtils.hasText(request.action())) {
       throw new IllegalArgumentException("抓取候选和审核动作不能为空");
@@ -2753,6 +2798,21 @@ public class CompassService {
     return 24 * 60;
   }
 
+  private String classifyCrawlFailure(String message) {
+    String lowerMessage = StringUtils.hasText(message) ? message.toLowerCase(Locale.ROOT) : "";
+    if (lowerMessage.contains("certificate") || lowerMessage.contains("pkix") || lowerMessage.contains("ssl") || lowerMessage.contains("handshake")) {
+      return "证书异常";
+    }
+    if (!StringUtils.hasText(message)) return "无";
+    if (message.contains("AI 解析失败") || message.contains("规则兜底")) return "AI解析降级";
+    if (message.contains("HTTP 401") || message.contains("HTTP 403") || message.contains("HTTP 429") || message.contains("拒绝访问")) return "访问受限";
+    if (message.contains("正文过短") || message.contains("页面为空")) return "正文不足";
+    if (message.contains("编码") || message.contains("乱码")) return "编码问题";
+    if (message.contains("重复") || message.contains("未发现新的候选")) return "无新增";
+    if (message.contains("所有来源地址抓取失败") || message.contains("抓取失败")) return "抓取失败";
+    return "正常";
+  }
+
   private List<CrawledPage> crawlPagesForSource(Map<String, Object> source, CrawledPage entryPage) {
     List<LinkCandidate> links = extractActionableLinks(entryPage.url(), entryPage.html(), sourceField(source, "path", "就业"));
     List<CrawledPage> pages = new ArrayList<>();
@@ -2875,7 +2935,7 @@ public class CompassService {
       URI current = uri;
       for (int redirects = 0; redirects < 4; redirects++) {
         HttpRequest request = crawlRequest(current, userAgent);
-        response = crawlHttpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        response = sendCrawlRequest(request);
         if (response.statusCode() < 300 || response.statusCode() >= 400) break;
         Optional<String> location = response.headers().firstValue("location");
         if (location.isEmpty()) break;
@@ -2904,6 +2964,120 @@ public class CompassService {
       throw new IllegalStateException("来源正文过短，无法形成候选资讯");
     }
     return new CrawledPage(uri.toString(), title, trimText(text, 12000), body);
+  }
+
+  private HttpResponse<byte[]> sendCrawlRequest(HttpRequest request) throws Exception {
+    try {
+      return crawlHttpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+    } catch (Exception exception) {
+      if (crawlInsecureSslFallbackEnabled && isSslCertificateError(exception)) {
+        return sendInsecureCrawlRequest(request);
+      }
+      throw exception;
+    }
+  }
+
+  private HttpResponse<byte[]> sendInsecureCrawlRequest(HttpRequest request) throws Exception {
+    if (!"https".equalsIgnoreCase(request.uri().getScheme())) {
+      throw new IllegalStateException("SSL fallback only supports HTTPS crawl URLs");
+    }
+    HttpsURLConnection connection = (HttpsURLConnection) request.uri().toURL().openConnection();
+    connection.setSSLSocketFactory(createTrustAllSslContext().getSocketFactory());
+    connection.setHostnameVerifier((hostname, session) -> true);
+    connection.setInstanceFollowRedirects(false);
+    connection.setConnectTimeout(12_000);
+    connection.setReadTimeout(20_000);
+    connection.setRequestMethod(request.method());
+    request.headers().map().forEach((name, values) -> values.forEach(value -> connection.addRequestProperty(name, value)));
+    try {
+      int statusCode = connection.getResponseCode();
+      InputStream input = statusCode >= 400 ? connection.getErrorStream() : connection.getInputStream();
+      byte[] body = input == null ? new byte[0] : input.readAllBytes();
+      Map<String, List<String>> headers = new LinkedHashMap<>();
+      connection.getHeaderFields().forEach((name, values) -> {
+        if (StringUtils.hasText(name) && values != null) {
+          headers.put(name, List.copyOf(values));
+        }
+      });
+      return new CrawlHttpResponse(statusCode, request, HttpHeaders.of(headers, (name, value) -> true), body, request.uri());
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  private HttpClient createCrawlHttpClient() {
+    return HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(12))
+        .followRedirects(HttpClient.Redirect.NORMAL)
+        .build();
+  }
+
+  private SSLContext createTrustAllSslContext() {
+    try {
+      TrustManager[] trustManagers = new TrustManager[] {
+          new X509TrustManager() {
+            @Override
+            public void checkClientTrusted(X509Certificate[] chain, String authType) {
+            }
+
+            @Override
+            public void checkServerTrusted(X509Certificate[] chain, String authType) {
+            }
+
+            @Override
+            public X509Certificate[] getAcceptedIssuers() {
+              return new X509Certificate[0];
+            }
+          }
+      };
+      SSLContext sslContext = SSLContext.getInstance("TLS");
+      sslContext.init(null, trustManagers, new SecureRandom());
+      return sslContext;
+    } catch (GeneralSecurityException exception) {
+      throw new IllegalStateException("Unable to initialize crawl SSL fallback", exception);
+    }
+  }
+
+  private boolean isSslCertificateError(Throwable throwable) {
+    Throwable current = throwable;
+    while (current != null) {
+      if (current instanceof SSLHandshakeException || current instanceof SSLException) {
+        return true;
+      }
+      String message = current.getMessage();
+      if (message != null) {
+        String lowerMessage = message.toLowerCase(Locale.ROOT);
+        if (lowerMessage.contains("certificate") || lowerMessage.contains("pkix")
+            || lowerMessage.contains("subject alternative") || lowerMessage.contains("unable to find valid certification path")) {
+          return true;
+        }
+      }
+      current = current.getCause();
+    }
+    return false;
+  }
+
+  private record CrawlHttpResponse(
+      int statusCode,
+      HttpRequest request,
+      HttpHeaders headers,
+      byte[] body,
+      URI uri
+  ) implements HttpResponse<byte[]> {
+    @Override
+    public Optional<HttpResponse<byte[]>> previousResponse() {
+      return Optional.empty();
+    }
+
+    @Override
+    public Optional<SSLSession> sslSession() {
+      return Optional.empty();
+    }
+
+    @Override
+    public HttpClient.Version version() {
+      return HttpClient.Version.HTTP_1_1;
+    }
   }
 
   private HttpRequest crawlRequest(URI uri, String userAgent) {

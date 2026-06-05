@@ -7,7 +7,9 @@ import java.time.Instant;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Service;
@@ -25,6 +27,7 @@ public class EmailVerificationService {
   private final int cooldownSeconds;
   private final int maxSendsPerWindow;
   private final int maxAttempts;
+  private final StringRedisTemplate redisTemplate;
 
   public EmailVerificationService(
       JavaMailSender mailSender,
@@ -34,7 +37,8 @@ public class EmailVerificationService {
       @Value("${app.mail.code-ttl-minutes:10}") int ttlMinutes,
       @Value("${app.mail.code-cooldown-seconds:60}") int cooldownSeconds,
       @Value("${app.mail.code-max-sends-per-window:3}") int maxSendsPerWindow,
-      @Value("${app.mail.code-max-attempts:5}") int maxAttempts
+      @Value("${app.mail.code-max-attempts:5}") int maxAttempts,
+      ObjectProvider<StringRedisTemplate> redisTemplateProvider
   ) {
     this.mailSender = mailSender;
     this.verificationEnabled = verificationEnabled;
@@ -44,6 +48,7 @@ public class EmailVerificationService {
     this.cooldownSeconds = Math.max(10, cooldownSeconds);
     this.maxSendsPerWindow = Math.max(1, maxSendsPerWindow);
     this.maxAttempts = Math.max(1, maxAttempts);
+    this.redisTemplate = redisTemplateProvider.getIfAvailable();
   }
 
   public EmailCodeResult sendRegisterCode(String email) {
@@ -66,7 +71,7 @@ public class EmailVerificationService {
     ensureMailConfigured();
     Instant now = Instant.now();
     String key = codeKey(normalized, purpose);
-    CodeEntry current = codes.get(key);
+    CodeEntry current = loadCode(key);
     if (current != null && current.lastSentAt().plusSeconds(cooldownSeconds).isAfter(now)) {
       long waitSeconds = Duration.between(now, current.lastSentAt().plusSeconds(cooldownSeconds)).toSeconds();
       throw new IllegalArgumentException("验证码发送过于频繁，请 " + Math.max(1, waitSeconds) + " 秒后再试");
@@ -82,7 +87,7 @@ public class EmailVerificationService {
 
     String code = String.format(Locale.ROOT, "%06d", random.nextInt(1_000_000));
     sendMail(normalized, code, actionText);
-    codes.put(key, new CodeEntry(
+    saveCode(key, new CodeEntry(
         code,
         now.plus(Duration.ofMinutes(ttlMinutes)),
         now,
@@ -112,22 +117,22 @@ public class EmailVerificationService {
       throw new IllegalArgumentException("请输入邮箱验证码");
     }
     String key = codeKey(normalized, purpose);
-    CodeEntry current = codes.get(key);
+    CodeEntry current = loadCode(key);
     if (current == null) {
       throw new IllegalArgumentException("请先获取邮箱验证码");
     }
     Instant now = Instant.now();
     if (current.expiresAt().isBefore(now)) {
-      codes.remove(key);
+      deleteCode(key);
       throw new IllegalArgumentException("验证码已过期，请重新发送");
     }
     if (!current.code().equals(code.trim())) {
       int attempts = current.attempts() + 1;
       if (attempts >= maxAttempts) {
-        codes.remove(key);
+        deleteCode(key);
         throw new IllegalArgumentException("验证码错误次数过多，请重新发送");
       }
-      codes.put(key, new CodeEntry(
+      saveCode(key, new CodeEntry(
           current.code(),
           current.expiresAt(),
           current.lastSentAt(),
@@ -137,7 +142,7 @@ public class EmailVerificationService {
       ));
       throw new IllegalArgumentException("验证码错误，还可尝试 " + (maxAttempts - attempts) + " 次");
     }
-    codes.remove(key);
+    deleteCode(key);
   }
 
   private void sendMail(String email, String code, String actionText) {
@@ -176,6 +181,75 @@ public class EmailVerificationService {
 
   private String codeKey(String email, String purpose) {
     return (StringUtils.hasText(purpose) ? purpose.trim().toLowerCase(Locale.ROOT) : "register") + ":" + email;
+  }
+
+  private CodeEntry loadCode(String key) {
+    if (redisTemplate != null) {
+      try {
+        String raw = redisTemplate.opsForValue().get(redisKey(key));
+        if (StringUtils.hasText(raw)) {
+          return parseEntry(raw);
+        }
+      } catch (RuntimeException ignored) {
+        // Redis is preferred for production, memory remains a local fallback.
+      }
+    }
+    return codes.get(key);
+  }
+
+  private void saveCode(String key, CodeEntry entry) {
+    codes.put(key, entry);
+    if (redisTemplate != null) {
+      try {
+        long ttlSeconds = Math.max(1, Duration.between(Instant.now(), entry.expiresAt()).toSeconds());
+        redisTemplate.opsForValue().set(redisKey(key), serializeEntry(entry), Duration.ofSeconds(ttlSeconds));
+      } catch (RuntimeException ignored) {
+        // Keep the in-memory copy.
+      }
+    }
+  }
+
+  private void deleteCode(String key) {
+    codes.remove(key);
+    if (redisTemplate != null) {
+      try {
+        redisTemplate.delete(redisKey(key));
+      } catch (RuntimeException ignored) {
+        // Best-effort cleanup.
+      }
+    }
+  }
+
+  private String redisKey(String key) {
+    return "career-compass:email-code:" + key;
+  }
+
+  private String serializeEntry(CodeEntry entry) {
+    return String.join("|",
+        entry.code(),
+        String.valueOf(entry.expiresAt().toEpochMilli()),
+        String.valueOf(entry.lastSentAt().toEpochMilli()),
+        String.valueOf(entry.windowStart().toEpochMilli()),
+        String.valueOf(entry.sentInWindow()),
+        String.valueOf(entry.attempts())
+    );
+  }
+
+  private CodeEntry parseEntry(String raw) {
+    try {
+      String[] parts = raw.split("\\|");
+      if (parts.length != 6) return null;
+      return new CodeEntry(
+          parts[0],
+          Instant.ofEpochMilli(Long.parseLong(parts[1])),
+          Instant.ofEpochMilli(Long.parseLong(parts[2])),
+          Instant.ofEpochMilli(Long.parseLong(parts[3])),
+          Integer.parseInt(parts[4]),
+          Integer.parseInt(parts[5])
+      );
+    } catch (RuntimeException exception) {
+      return null;
+    }
   }
 
   private record CodeEntry(

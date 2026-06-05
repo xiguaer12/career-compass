@@ -279,6 +279,19 @@ export type CrawlCandidateItem = {
   tags?: string;
 };
 
+export type CrawlTaskItem = {
+  id: number;
+  sourceId: number;
+  sourceName: string;
+  triggerType: string;
+  status: string;
+  resultMessage?: string;
+  failureType: string;
+  startedAt?: string;
+  finishedAt?: string;
+  createdAt: string;
+};
+
 export type ChartItem = {
   id: number;
   title: string;
@@ -545,6 +558,10 @@ export const adminApi = {
     api<Record<string, unknown>>("/admin/community/user/ban", { method: "POST", body: JSON.stringify({ id, status, reason, expectedStatus }) }, token),
   candidates: (token: string, status = "") =>
     api<CrawlCandidateItem[]>(`/admin/crawl/candidates${status ? `?status=${encodeURIComponent(status)}` : ""}`, {}, token),
+  crawlTasks: (token: string, params: Record<string, string> = {}) => {
+    const search = new URLSearchParams(Object.entries(params).filter(([, value]) => Boolean(value))).toString();
+    return api<CrawlTaskItem[]>(`/admin/crawl/tasks${search ? `?${search}` : ""}`, {}, token);
+  },
   reviewCandidate: (token: string, id: number, action: string, patch: Record<string, unknown> = {}) =>
     api<Record<string, unknown>>("/admin/crawl/candidates/review", { method: "POST", body: JSON.stringify({ id, action, ...patch }) }, token),
   charts: (token: string) => api<ChartItem[]>("/admin/charts", {}, token),

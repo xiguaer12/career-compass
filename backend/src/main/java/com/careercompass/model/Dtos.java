@@ -390,6 +390,19 @@ public final class Dtos {
       String tags
   ) {}
 
+  public record CrawlTaskItem(
+      long id,
+      long sourceId,
+      String sourceName,
+      String triggerType,
+      String status,
+      String resultMessage,
+      String failureType,
+      String startedAt,
+      String finishedAt,
+      String createdAt
+  ) {}
+
   public record CrawlCandidateReviewRequest(
       long id,
       String action,

@@ -116,6 +116,14 @@ public class AdminApiController {
     return ApiResponse.ok(service.crawlCandidates(status));
   }
 
+  @GetMapping("/crawl/tasks")
+  public ApiResponse<List<CrawlTaskItem>> crawlTasks(
+      @RequestParam(required = false) String status,
+      @RequestParam(required = false) Long sourceId
+  ) {
+    return ApiResponse.ok(service.crawlTasks(status, sourceId));
+  }
+
   @PostMapping("/crawl/candidates/review")
   public ApiResponse<Map<String, Object>> reviewCandidate(@RequestBody CrawlCandidateReviewRequest request) {
     return ApiResponse.message("抓取候选审核完成", service.reviewCandidate(request));

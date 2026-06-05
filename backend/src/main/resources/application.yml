@@ -48,6 +48,8 @@ app:
     enabled: ${AUTO_CRAWL_ENABLED:true}
     initial-delay-minutes: ${AUTO_CRAWL_INITIAL_DELAY_MINUTES:5}
     interval-minutes: ${AUTO_CRAWL_INTERVAL_MINUTES:60}
+  crawl:
+    insecure-ssl-fallback-enabled: ${CRAWL_INSECURE_SSL_FALLBACK_ENABLED:true}
   chart-auto-refresh:
     enabled: ${CHART_AUTO_REFRESH_ENABLED:true}
     initial-delay-minutes: ${CHART_AUTO_REFRESH_INITIAL_DELAY_MINUTES:10}
