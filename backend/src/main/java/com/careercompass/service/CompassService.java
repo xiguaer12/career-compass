@@ -58,6 +58,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -74,6 +75,7 @@ public class CompassService {
   private static final List<String> CHART_IMPORT_COLORS = List.of(
       "#2563eb", "#0f766e", "#b45309", "#be123c", "#6d28d9", "#0284c7"
   );
+  private record AbuseTarget(String targetType, long targetId) {}
   private static final Map<String, List<String>> USST_COLLEGE_MAJORS = Map.ofEntries(
       Map.entry("能源与动力工程学院", List.of("过程装备与控制工程", "能源与动力工程", "新能源科学与工程", "储能科学与工程")),
       Map.entry("光电信息与计算机工程学院", List.of("测控技术与仪器", "电子信息工程", "电子科学与技术", "通信工程", "光电信息科学与工程", "自动化", "计算机科学与技术", "智能科学与技术", "数据科学与大数据技术")),
@@ -2266,27 +2268,83 @@ public class CompassService {
     ), params.toArray());
   }
 
+  @Transactional
   public Map<String, Object> handleAbuse(AdminStatusRequest request) {
     if (request == null || request.id() <= 0 || !StringUtils.hasText(request.status())) {
       throw new IllegalArgumentException("举报处理状态不能为空");
     }
+    AbuseTarget target = findAbuseTarget(request.id());
+    String result = valueOr(request.reason(), request.status());
     int updated = StringUtils.hasText(request.expectedStatus())
         ? jdbc.update(
             "update abuse_report set status = ?, handled_by = 'admin', handled_result = ?, handled_at = current_timestamp where id = ? and status = ?",
             request.status(),
-            valueOr(request.reason(), request.status()),
+            result,
             request.id(),
             request.expectedStatus()
         )
         : jdbc.update(
             "update abuse_report set status = ?, handled_by = 'admin', handled_result = ?, handled_at = current_timestamp where id = ?",
             request.status(),
-            valueOr(request.reason(), request.status()),
+            result,
             request.id()
         );
     if (updated == 0) throwReviewConflictIfExists("abuse_report", request.id(), request.expectedStatus(), "举报不存在");
-    audit("admin", "HANDLE_ABUSE", "abuse_report", String.valueOf(request.id()), Map.of("status", request.status(), "result", valueOr(request.reason(), "")));
-    return Map.of("id", request.id(), "status", request.status());
+    String targetStatus = "未变更";
+    if ("已处理".equals(request.status())) {
+      targetStatus = takeDownReportedTarget(target, result);
+    }
+    audit("admin", "HANDLE_ABUSE", "abuse_report", String.valueOf(request.id()), Map.of(
+        "status", request.status(),
+        "result", result,
+        "targetType", target.targetType(),
+        "targetId", target.targetId(),
+        "targetStatus", targetStatus
+    ));
+    return Map.of(
+        "id", request.id(),
+        "status", request.status(),
+        "targetType", target.targetType(),
+        "targetId", target.targetId(),
+        "targetStatus", targetStatus
+    );
+  }
+
+  private AbuseTarget findAbuseTarget(long reportId) {
+    List<AbuseTarget> rows = jdbc.query(
+        "select target_type, target_id from abuse_report where id = ?",
+        (rs, rowNum) -> new AbuseTarget(rs.getString("target_type"), rs.getLong("target_id")),
+        reportId
+    );
+    if (rows.isEmpty()) throw new IllegalArgumentException("举报不存在");
+    return rows.getFirst();
+  }
+
+  private String takeDownReportedTarget(AbuseTarget target, String reason) {
+    if ("post".equals(target.targetType())) {
+      int updated = jdbc.update(
+          """
+          update community_post
+          set status = '已下架', reject_reason = ?, pinned = 0, featured = 0, updated_at = current_timestamp
+          where id = ?
+          """,
+          reason,
+          target.targetId()
+      );
+      if (updated == 0) throw new IllegalArgumentException("被举报帖子不存在");
+      audit("admin", "TAKE_DOWN_REPORTED_CONTENT", "community_post", String.valueOf(target.targetId()), Map.of("reason", reason));
+      return "已下架";
+    }
+    if ("comment".equals(target.targetType())) {
+      int updated = jdbc.update(
+          "update community_comment set status = '已下架', best_answer = 0, updated_at = current_timestamp where id = ?",
+          target.targetId()
+      );
+      if (updated == 0) throw new IllegalArgumentException("被举报评论不存在");
+      audit("admin", "TAKE_DOWN_REPORTED_CONTENT", "community_comment", String.valueOf(target.targetId()), Map.of("reason", reason));
+      return "已下架";
+    }
+    throw new IllegalArgumentException("举报对象类型不支持");
   }
 
   public Map<String, Object> updatePostStatus(AdminStatusRequest request) {

@@ -5,3 +5,15 @@ target/
 .env
 *.log
 uploads/
+
+# Playwright test files and generated reports
+frontend/playwright.config.ts
+frontend/tests/
+frontend/test-results/
+frontend/playwright-report/
+frontend/playwright-results.json
+
+# Local project documents
+测试分析报告.docx
+测试计划说明书.doc
+项目总结.doc

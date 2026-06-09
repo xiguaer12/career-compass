@@ -3610,10 +3610,10 @@ function AdminView() {
   async function handleReport(id: number, status: string, expectedStatus?: string) {
     if (!admin) return;
     await runAdminAction(`report-${id}-${status}`, async () => {
-      await adminApi.handleReport(admin.token, id, status, status === "已处理" ? "已完成核查与处置" : "暂不处理", expectedStatus);
+      await adminApi.handleReport(admin.token, id, status, status === "已处理" ? "已完成核查并下架对应内容" : "暂不处理", expectedStatus);
       setExpandedReportId(null);
       setReports((current) => current.filter((report) => report.id !== id));
-      return "举报处理结果已记录，已从待处理列表移除";
+      return status === "已处理" ? "举报处理结果已记录，对应内容已下架" : "举报处理结果已记录，已从待处理列表移除";
     });
   }
 
@@ -4041,7 +4041,7 @@ function AdminView() {
                       <button className="secondary-button" onClick={() => setExpandedReportId(expanded ? null : report.id)} disabled={adminWorking}>
                         {expanded ? "收起" : "详情"}
                       </button>
-                      <button className="secondary-button" onClick={() => handleReport(report.id, "已处理", report.status)} disabled={adminWorking}>{busyLabel(`report-${report.id}-已处理`, "处理")}</button>
+                      <button className="secondary-button" onClick={() => handleReport(report.id, "已处理", report.status)} disabled={adminWorking}>{busyLabel(`report-${report.id}-已处理`, "下架处理")}</button>
                       <button className="secondary-button danger-button" onClick={() => handleReport(report.id, "已驳回", report.status)} disabled={adminWorking}>{busyLabel(`report-${report.id}-已驳回`, "驳回")}</button>
                     </div>
                   </div>
