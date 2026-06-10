@@ -7,6 +7,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
@@ -23,6 +24,16 @@ public class RestExceptionHandler {
   public ResponseEntity<ApiResponse<Void>> handleInvalidJson(HttpMessageNotReadableException exception) {
     return ResponseEntity.status(HttpStatus.BAD_REQUEST)
         .body(new ApiResponse<>(false, "请求 JSON 格式不正确", null));
+  }
+
+  @ExceptionHandler(MissingRequestHeaderException.class)
+  public ResponseEntity<ApiResponse<Void>> handleMissingRequestHeader(MissingRequestHeaderException exception) {
+    if ("Authorization".equalsIgnoreCase(exception.getHeaderName())) {
+      return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+          .body(new ApiResponse<>(false, "未登录或登录已过期", null));
+    }
+    return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+        .body(new ApiResponse<>(false, "缺少请求头：" + exception.getHeaderName(), null));
   }
 
   @ExceptionHandler(Exception.class)
