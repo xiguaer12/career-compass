@@ -6,12 +6,30 @@ target/
 *.log
 uploads/
 
-# Playwright test files and generated reports
+# Test files, configs, and generated reports
+api-tests/
+backend/src/test/
 frontend/playwright.config.ts
 frontend/tests/
+frontend/src/**/*.test.ts
+frontend/src/**/*.test.tsx
+frontend/src/**/*.spec.ts
+frontend/src/**/*.spec.tsx
 frontend/test-results/
 frontend/playwright-report/
 frontend/playwright-results.json
+frontend/allure-results/
+frontend/allure-report/
+__pycache__/
+*.py[cod]
+coverage/
+htmlcov/
+.coverage
+junit.xml
+test-results/
+playwright-report/
+allure-results/
+allure-report/
 
 # Local project documents
 测试分析报告.docx
