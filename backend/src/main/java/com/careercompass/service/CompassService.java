@@ -14,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.sql.PreparedStatement;
@@ -27,12 +28,15 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.Executors;
@@ -41,6 +45,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import javax.net.ssl.HttpsURLConnection;
@@ -183,6 +188,7 @@ public class CompassService {
     addColumn("content_info", "sort_order INT NOT NULL DEFAULT 0");
     addColumn("content_info", "publish_at TIMESTAMP NULL");
     addColumn("content_info", "offline_at TIMESTAMP NULL");
+    addColumn("content_info", "content_fingerprint VARCHAR(64)");
     addColumn("chart_info", "filters_json JSON");
     addColumn("chart_info", "visibility VARCHAR(40) NOT NULL DEFAULT '公开'");
     addColumn("chart_info", "display_position VARCHAR(60)");
@@ -198,6 +204,7 @@ public class CompassService {
     addColumn("admin_account", "locked_until TIMESTAMP NULL");
     addColumn("data_source", "parser_rule_json JSON");
     addColumn("crawl_candidate", "task_id BIGINT NULL");
+    addColumn("crawl_candidate", "content_fingerprint VARCHAR(64)");
     ensureSrsIndexes();
     repairSeedData();
     recoverInterruptedCrawlTasks();
@@ -1833,15 +1840,17 @@ public class CompassService {
     String body = valueOr(String.valueOf(parsed.getOrDefault("body", "")), summary);
     String tags = valueOr(request.tags(), tagsFromParsed(parsed, category));
     String displayPosition = valueOr(request.displayPosition(), "路径页");
+    String fingerprint = valueOr(String.valueOf(row.get("content_fingerprint")), String.valueOf(parsed.getOrDefault("contentFingerprint", "")));
     KeyHolder keyHolder = new GeneratedKeyHolder();
     jdbc.update(connection -> {
       PreparedStatement statement = connection.prepareStatement(
           """
           insert into content_info
-            (title, category, body, summary, source_name, source_url, tags, display_position, sort_order, status, publish_at)
-          values (?, ?, ?, ?, ?, ?, ?, ?, 0, '已发布', current_timestamp)
+            (title, category, body, summary, source_name, source_url, tags, display_position, sort_order, status, publish_at, content_fingerprint)
+          values (?, ?, ?, ?, ?, ?, ?, ?, 0, '已发布', current_timestamp, ?)
           on duplicate key update id = last_insert_id(id), body = values(body), summary = values(summary), source_name = values(source_name),
             source_url = values(source_url), tags = values(tags), display_position = values(display_position),
+            content_fingerprint = values(content_fingerprint),
             status = '已发布', publish_at = current_timestamp, updated_at = current_timestamp
           """,
           Statement.RETURN_GENERATED_KEYS
@@ -1854,6 +1863,7 @@ public class CompassService {
       statement.setString(6, String.valueOf(row.get("raw_url")));
       statement.setString(7, tags);
       statement.setString(8, displayPosition);
+      statement.setString(9, fingerprint);
       return statement;
     }, keyHolder);
     long contentId = keyHolder.getKey().longValue();
@@ -2450,12 +2460,13 @@ public class CompassService {
     }, taskKey);
     long taskId = taskKey.getKey().longValue();
     List<String> sourceUrls = sourceCandidateUrls(source);
+    Map<String, Object> parserRule = sourceParserRule(source);
     try {
       List<String> fetchErrors = new ArrayList<>();
       CrawledPage entryPage = null;
       for (String candidateUrl : sourceUrls) {
         try {
-          entryPage = fetchCrawlPage(candidateUrl);
+          entryPage = fetchCrawlPage(candidateUrl, true);
           break;
         } catch (Exception exception) {
           fetchErrors.add(candidateUrl + "：" + trimText(valueOr(exception.getMessage(), "抓取失败"), 180));
@@ -2467,9 +2478,20 @@ public class CompassService {
       List<CrawledPage> pages = crawlPagesForSource(source, entryPage);
       int created = 0;
       int skipped = 0;
+      int stale = 0;
+      int irrelevant = 0;
       for (CrawledPage page : pages) {
-        if (crawlCandidateExists(sourceId, page.url())) {
+        String fingerprint = crawlFingerprint(page);
+        if (crawlCandidateExists(sourceId, page.url(), fingerprint)) {
           skipped++;
+          continue;
+        }
+        if (shouldSkipStalePage(parserRule, page)) {
+          stale++;
+          continue;
+        }
+        if (shouldSkipLowRelevancePage(parserRule, page)) {
+          irrelevant++;
           continue;
         }
         Map<String, Object> fallback = fallbackCrawlCandidate(source, page);
@@ -2492,28 +2514,40 @@ public class CompassService {
               "reason", trimText(valueOr(exception.getMessage(), "AI 解析失败"), 240)
           ));
         }
+        if (parsedLooksIrrelevant(parsed)) {
+          irrelevant++;
+          continue;
+        }
+        parsed = enrichCrawlMetadata(parsed, page, fingerprint);
         jdbc.update(
             """
-            insert into crawl_candidate (source_id, task_id, raw_url, parsed_json, review_status, crawled_at, parsed_at)
-            values (?, ?, ?, cast(? as json), '待审核', current_timestamp, current_timestamp)
+            insert into crawl_candidate (source_id, task_id, raw_url, parsed_json, content_fingerprint, review_status, crawled_at, parsed_at)
+            values (?, ?, ?, cast(? as json), ?, '待审核', current_timestamp, current_timestamp)
             """,
             sourceId,
             taskId,
             page.url(),
-            toJson(parsed)
+            toJson(parsed),
+            fingerprint
         );
         created++;
       }
       String resultMessage = created > 0
           ? "已生成 " + created + " 条待审核候选" + (skipped > 0 ? "，跳过重复 " + skipped + " 条" : "")
           : "未发现新的候选内容" + (skipped > 0 ? "，已跳过重复 " + skipped + " 条" : "");
+      if (stale > 0) {
+        resultMessage += "，过滤过旧 " + stale + " 条";
+      }
+      if (irrelevant > 0) {
+        resultMessage += "，过滤低相关 " + irrelevant + " 条";
+      }
       if (!fetchErrors.isEmpty()) {
         resultMessage = trimText(resultMessage + "；部分页面已跳过或降级：" + String.join("；", fetchErrors), 500);
       }
       jdbc.update("update crawl_task set status = '已完成', result_message = ?, finished_at = current_timestamp where id = ?", resultMessage, taskId);
       jdbc.update("update data_source set last_crawl_at = current_timestamp where id = ?", sourceId);
-      audit(actor, "TRIGGER_CRAWL", "data_source", String.valueOf(sourceId), Map.of("taskId", taskId, "created", created, "skipped", skipped, "entryUrl", entryPage.url()));
-      return Map.of("sourceId", sourceId, "taskId", taskId, "taskStatus", "已完成", "createdCount", created, "skippedCount", skipped, "message", resultMessage, "createdAt", Instant.now().toString());
+      audit(actor, "TRIGGER_CRAWL", "data_source", String.valueOf(sourceId), Map.of("taskId", taskId, "created", created, "skipped", skipped, "stale", stale, "irrelevant", irrelevant, "entryUrl", entryPage.url()));
+      return Map.of("sourceId", sourceId, "taskId", taskId, "taskStatus", "已完成", "createdCount", created, "skippedCount", skipped, "staleCount", stale, "irrelevantCount", irrelevant, "message", resultMessage, "createdAt", Instant.now().toString());
     } catch (Exception exception) {
       String message = trimText(exception.getMessage() == null ? "抓取失败" : exception.getMessage(), 480);
       jdbc.update("update crawl_task set status = '失败', result_message = ?, finished_at = current_timestamp where id = ?", message, taskId);
@@ -2829,7 +2863,7 @@ public class CompassService {
         """
         select id, crawl_frequency, last_crawl_at
         from data_source
-        where status = '启用'
+        where status = '启用' and crawl_frequency <> '手动'
         order by case when last_crawl_at is null then 0 else 1 end, last_crawl_at asc, id asc
         limit 20
         """
@@ -2842,13 +2876,14 @@ public class CompassService {
       if (isDue) {
         due.add(((Number) row.get("id")).longValue());
       }
-      if (due.size() >= 3) break;
+      if (due.size() >= 5) break;
     }
     return due;
   }
 
   private int crawlIntervalMinutes(String frequency) {
     if (!StringUtils.hasText(frequency)) return 24 * 60;
+    if (frequency.contains("手动")) return Integer.MAX_VALUE;
     if (frequency.contains("小时")) return 60;
     if (frequency.contains("周")) return 7 * 24 * 60;
     if (frequency.contains("月")) return 30 * 24 * 60;
@@ -2872,10 +2907,13 @@ public class CompassService {
   }
 
   private List<CrawledPage> crawlPagesForSource(Map<String, Object> source, CrawledPage entryPage) {
-    List<LinkCandidate> links = extractActionableLinks(entryPage.url(), entryPage.html(), sourceField(source, "path", "就业"));
+    Map<String, Object> parserRule = sourceParserRule(source);
+    int maxPages = intRule(parserRule, "maxPages", 5, 1, 10);
+    int maxLinks = intRule(parserRule, "maxLinks", 8, 1, 30);
+    List<LinkCandidate> links = extractActionableLinks(entryPage.url(), entryPage.html(), sourceField(source, "path", "就业"), parserRule, maxLinks);
     List<CrawledPage> pages = new ArrayList<>();
     for (LinkCandidate link : links) {
-      if (pages.size() >= 5) break;
+      if (pages.size() >= maxPages) break;
       if (crawlCandidateExists(((Number) source.get("id")).longValue(), link.url())) continue;
       try {
         pages.add(fetchCrawlPage(link.url()));
@@ -2886,13 +2924,16 @@ public class CompassService {
         ));
       }
     }
-    return pages.isEmpty() ? List.of(entryPage) : pages;
+    return pages.isEmpty() && entryPage.text().length() >= 80 ? List.of(entryPage) : pages;
   }
 
-  private List<LinkCandidate> extractActionableLinks(String baseUrl, String html, String path) {
+  private List<LinkCandidate> extractActionableLinks(String baseUrl, String html, String path, Map<String, Object> parserRule, int maxLinks) {
     if (!StringUtils.hasText(html)) return List.of();
     URI base = URI.create(baseUrl);
     String baseHost = normalizedHost(base.getHost());
+    List<String> includeKeywords = stringListRule(parserRule, "includeKeywords");
+    List<String> excludeKeywords = stringListRule(parserRule, "excludeKeywords");
+    int minScore = intRule(parserRule, "minScore", 2, 0, 20);
     Map<String, LinkCandidate> candidates = new LinkedHashMap<>();
     java.util.regex.Matcher matcher = Pattern
         .compile("(?is)<a\\b[^>]*href\\s*=\\s*['\"]([^'\"]+)['\"][^>]*>(.*?)</a>")
@@ -2911,8 +2952,11 @@ public class CompassService {
       }
       if (!baseHost.equals(normalizedHost(resolved.getHost())) || looksLikeDownload(resolved.getPath())) continue;
       String text = cleanAnchorText(matcher.group(2));
+      String searchable = text + " " + resolved;
+      if (containsAny(searchable, excludeKeywords)) continue;
       int score = linkScore(text + " " + resolved, path);
-      if (score < 2) continue;
+      if (!includeKeywords.isEmpty() && containsAny(searchable, includeKeywords)) score += 3;
+      if (score < minScore) continue;
       String url = normalizedCrawlUrl(resolved);
       LinkCandidate current = candidates.get(url);
       if (current == null || score > current.score()) {
@@ -2921,7 +2965,7 @@ public class CompassService {
     }
     return candidates.values().stream()
         .sorted(Comparator.comparingInt(LinkCandidate::score).reversed())
-        .limit(8)
+        .limit(maxLinks)
         .toList();
   }
 
@@ -2944,19 +2988,147 @@ public class CompassService {
   }
 
   private boolean crawlCandidateExists(long sourceId, String url) {
+    return crawlCandidateExists(sourceId, url, "");
+  }
+
+  private boolean crawlCandidateExists(long sourceId, String url, String fingerprint) {
     Integer count = jdbc.queryForObject(
         """
         select
-          (select count(*) from crawl_candidate where source_id = ? and raw_url = ? and review_status in ('待审核', '已发布'))
+          (select count(*) from crawl_candidate where raw_url = ? or (? <> '' and content_fingerprint = ?))
           +
-          (select count(*) from content_info where source_url = ? and status = '已发布')
+          (select count(*) from content_info where source_url = ? or (? <> '' and content_fingerprint = ?))
         """,
         Integer.class,
-        sourceId,
         url,
-        url
+        valueOr(fingerprint, ""),
+        valueOr(fingerprint, ""),
+        url,
+        valueOr(fingerprint, ""),
+        valueOr(fingerprint, "")
     );
     return count != null && count > 0;
+  }
+
+  private boolean shouldSkipStalePage(Map<String, Object> parserRule, CrawledPage page) {
+    int maxAgeDays = intRule(parserRule, "maxAgeDays", 180, 1, 3650);
+    boolean requireRecent = booleanRule(parserRule, "requireRecent", false);
+    Optional<Instant> publishedAt = extractPublishedAt(page);
+    if (publishedAt.isEmpty()) return requireRecent;
+    return publishedAt.get().isBefore(Instant.now().minus(Duration.ofDays(maxAgeDays)));
+  }
+
+  private boolean shouldSkipLowRelevancePage(Map<String, Object> parserRule, CrawledPage page) {
+    if (!booleanRule(parserRule, "requireKeywordMatch", true)) return false;
+    List<String> includeKeywords = stringListRule(parserRule, "includeKeywords");
+    if (includeKeywords.isEmpty()) return false;
+    String searchable = valueOr(page.title(), "") + " " + trimText(page.text(), 1600);
+    return !containsAny(searchable, includeKeywords);
+  }
+
+  private boolean parsedLooksIrrelevant(Map<String, Object> parsed) {
+    if (parsed == null || parsed.isEmpty()) return false;
+    String text = List.of("title", "summary", "body", "reason").stream()
+        .map(parsed::get)
+        .filter(Objects::nonNull)
+        .map(String::valueOf)
+        .collect(Collectors.joining(" "));
+    if (!StringUtils.hasText(text)) return false;
+    return text.contains("无就业相关信息")
+        || text.contains("缺少就业相关")
+        || text.contains("与就业无关")
+        || text.contains("无考公相关")
+        || text.contains("与考公无关")
+        || text.contains("无考研相关")
+        || text.contains("与考研无关");
+  }
+
+  private Map<String, Object> enrichCrawlMetadata(Map<String, Object> parsed, CrawledPage page, String fingerprint) {
+    Map<String, Object> enriched = new LinkedHashMap<>(parsed == null ? Map.of() : parsed);
+    enriched.put("contentFingerprint", fingerprint);
+    extractPublishedAt(page).ifPresent(value -> enriched.put("publishedAt", value.toString()));
+    return enriched;
+  }
+
+  private String crawlFingerprint(CrawledPage page) {
+    String text = (valueOr(page.title(), "") + " " + firstSentence(page.text(), 500))
+        .toLowerCase(Locale.ROOT)
+        .replaceAll("[\\p{Punct}\\s，。！？、；：“”‘’（）【】《》]+", "");
+    return sha256(valueOr(text, normalizedCrawlUrl(URI.create(page.url()))));
+  }
+
+  private String sha256(String value) {
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+      StringBuilder builder = new StringBuilder();
+      for (byte item : bytes) {
+        builder.append(String.format("%02x", item));
+      }
+      return builder.toString();
+    } catch (Exception exception) {
+      throw new IllegalStateException("内容指纹生成失败", exception);
+    }
+  }
+
+  private Optional<Instant> extractPublishedAt(CrawledPage page) {
+    String source = valueOr(page.title(), "") + " " + valueOr(page.url(), "") + " " + trimText(page.text(), 600);
+    Optional<LocalDate> date = matchDate(source, "(?<!\\d)(20\\d{2})[年\\-/.](0?[1-9]|1[0-2])[月\\-/.](0?[1-9]|[12]\\d|3[01])");
+    if (date.isEmpty()) {
+      date = matchDate(source, "(?<!\\d)(20\\d{2})(0[1-9]|1[0-2])([0-3]\\d)(?!\\d)");
+    }
+    return date.map(value -> value.atStartOfDay().toInstant(ZoneOffset.ofHours(8)));
+  }
+
+  private Optional<LocalDate> matchDate(String source, String pattern) {
+    Matcher matcher = Pattern.compile(pattern).matcher(source);
+    while (matcher.find()) {
+      try {
+        int year = Integer.parseInt(matcher.group(1));
+        int month = Integer.parseInt(matcher.group(2));
+        int day = Integer.parseInt(matcher.group(3));
+        return Optional.of(LocalDate.of(year, month, day));
+      } catch (Exception ignored) {
+        // Try the next date-looking token.
+      }
+    }
+    return Optional.empty();
+  }
+
+  private int intRule(Map<String, Object> rule, String key, int fallback, int min, int max) {
+    Object value = rule == null ? null : rule.get(key);
+    int parsed = intFromObject(value, fallback);
+    return Math.max(min, Math.min(max, parsed));
+  }
+
+  private boolean booleanRule(Map<String, Object> rule, String key, boolean fallback) {
+    Object value = rule == null ? null : rule.get(key);
+    if (value instanceof Boolean bool) return bool;
+    if (value == null) return fallback;
+    return "true".equalsIgnoreCase(String.valueOf(value));
+  }
+
+  private List<String> stringListRule(Map<String, Object> rule, String key) {
+    Object value = rule == null ? null : rule.get(key);
+    if (value instanceof Iterable<?> rows) {
+      List<String> result = new ArrayList<>();
+      for (Object row : rows) {
+        if (row != null && StringUtils.hasText(String.valueOf(row))) result.add(String.valueOf(row));
+      }
+      return result;
+    }
+    if (value instanceof String text && StringUtils.hasText(text)) {
+      return List.of(text.split("[,，\\n]")).stream()
+          .map(String::trim)
+          .filter(StringUtils::hasText)
+          .toList();
+    }
+    return List.of();
+  }
+
+  private boolean containsAny(String text, List<String> keywords) {
+    if (!StringUtils.hasText(text) || keywords == null || keywords.isEmpty()) return false;
+    return keywords.stream().anyMatch(keyword -> StringUtils.hasText(keyword) && text.contains(keyword));
   }
 
   private String cleanAnchorText(String html) {
@@ -2983,6 +3155,10 @@ public class CompassService {
   }
 
   private CrawledPage fetchCrawlPage(String sourceUrl) throws Exception {
+    return fetchCrawlPage(sourceUrl, false);
+  }
+
+  private CrawledPage fetchCrawlPage(String sourceUrl, boolean allowShortText) throws Exception {
     URI uri = validateCrawlUri(sourceUrl);
     HttpResponse<byte[]> response = null;
     List<String> userAgents = List.of(
@@ -3018,7 +3194,7 @@ public class CompassService {
     String title = extractPageTitle(body);
     String text = cleanHtml(body);
     if (!StringUtils.hasText(title)) title = firstSentence(text, 80);
-    if (text.length() < 80) {
+    if (text.length() < 80 && !allowShortText) {
       throw new IllegalStateException("来源正文过短，无法形成候选资讯");
     }
     return new CrawledPage(uri.toString(), title, trimText(text, 12000), body);
@@ -3608,16 +3784,16 @@ public class CompassService {
     );
     seedPost(1, "从光电专业转软件测试岗，我把项目经历这样改成简历亮点", "围绕课程设计、实习、比赛三个材料，把经历拆成问题、动作、结果三段。", "经验帖", "就业", false, 126, 58, 18);
     seedPost(2, "省考和事业单位能不能同时准备？时间怎么分配更稳", "公共科目可复用，但岗位表筛选、申论材料和面试准备要分开管理。", "问答", "考公", true, 88, 41, 24);
-    seedSource(1, "研招网硕士专业目录", "专业目录与考试科目", "https://yz.chsi.com.cn/zsml/", "每日", "考研", "高", "启用");
-    seedSource(2, "研招网复试调剂服务", "复试调剂信息", "https://yz.chsi.com.cn/yztj/", "每日", "考研", "高", "启用");
-    seedSource(3, "上海理工大学研究生招生网", "校内研招公告", "https://yz.usst.edu.cn/", "每日", "考研", "高", "启用");
-    seedSource(4, "国考考试录用公务员专题", "岗位表与报考指南", "http://bm.scs.gov.cn/kl2026", "每日", "考公", "高", "启用");
-    seedSource(5, "上海市公务员局招录专题", "地方公务员招录", "https://bm.shacs.gov.cn/zlxt", "每日", "考公", "高", "启用");
-    seedSource(6, "上海人社事业单位招聘公告", "事业单位招聘公告", "https://rsj.sh.gov.cn/tzpgg_17408/index.html", "每日", "考公", "高", "启用");
-    seedSource(7, "国家大学生就业服务平台职位库", "校招岗位与实习岗位", "https://24365.ncss.cn/student/jobs/index.html", "每日", "就业", "高", "启用");
-    seedSource(8, "国家大学生就业服务平台专场招聘", "专场招聘会", "https://www.24365.ncss.cn/student/jobfair/index.html", "每日", "就业", "高", "启用");
-    seedSource(9, "乐业上海第一站", "上海就业服务与招聘", "https://jobs.rsj.sh.gov.cn/", "每日", "就业", "高", "启用");
-    seedSource(10, "上海理工大学就业信息网", "校内招聘与宣讲会", "https://91.usst.edu.cn/", "每日", "就业", "高", "启用");
+    seedSource(1, "研招网考研资讯", "考研政策与动态", "https://yz.chsi.com.cn/", "每日", "考研", "高", "启用", realtimeRule(180, "考研", "硕士", "研究生", "招生", "复试", "调剂", "网报"));
+    seedSource(2, "研招网网报公告", "网报公告", "https://yz.chsi.com.cn/sswbgg/", "每日", "考研", "高", "启用", realtimeRule(180, "网报", "公告", "报考点", "招生单位", "研究生"));
+    seedSource(3, "上海理工大学研究生招生网", "校内研招公告", "https://yz.usst.edu.cn/", "每日", "考研", "高", "启用", realtimeRule(180, "硕士", "研究生", "招生", "复试", "调剂", "公告"));
+    seedSource(4, "中国政府网部门动态", "公职政策与部门动态", "https://www.gov.cn/lianbo/bumen/", "每小时", "考公", "高", "启用", realtimeRule(90, "公务员", "录用", "事业单位", "考试", "面试", "就业"));
+    seedSource(5, "中国人力资源市场网三支一扶公告", "基层项目公告", "https://chrm.mohrss.gov.cn/%e9%ab%98%e6%a0%a1%e6%af%95%e4%b8%9a%e7%94%9f%e4%b8%89%e6%94%af%e4%b8%80%e6%89%b6%e8%ae%a1%e5%88%92/%e5%85%ac%e5%91%8a%e5%85%ac%e7%a4%ba/", "每日", "考公", "高", "启用", realtimeRule(180, "三支一扶", "基层", "公告", "公示", "招募", "报名"));
+    seedSource(6, "上海人社事业单位招聘公告", "事业单位招聘公告", "https://rsj.sh.gov.cn/tzpgg_17408/index.html", "每日", "考公", "高", "启用", realtimeRule(180, "事业单位", "招聘", "公告", "考试", "面试"));
+    seedSource(7, "中国人力资源市场网新闻报道", "就业资讯与政策", "https://chrm.mohrss.gov.cn/%e6%96%b0%e9%97%bb%e6%8a%a5%e9%81%93/", "每小时", "就业", "高", "启用", realtimeRule(120, "高校毕业生", "就业", "招聘", "岗位", "创业", "政策"));
+    seedSource(8, "中国政府网最新政策", "就业与升学政策", "https://www.gov.cn/zhengce/zuixin/", "每日", "就业", "高", "启用", realtimeRule(120, "就业", "高校毕业生", "招聘", "创业", "教育", "考试"));
+    seedSource(9, "中国人力资源市场网政策通知", "就业政策通知", "https://chrm.mohrss.gov.cn/%e6%94%bf%e7%ad%96%e9%80%9a%e7%9f%a5/", "每日", "就业", "高", "启用", realtimeRule(180, "就业", "招聘", "高校毕业生", "创业", "教育", "人才"));
+    seedSource(10, "上海理工大学就业信息网", "校内招聘与宣讲会", "https://91.usst.edu.cn/", "每日", "就业", "高", "启用", realtimeRule(120, "招聘", "宣讲", "校招", "实习", "就业"));
     seedChart(1, "2024-2026 高校毕业生规模", "趋势图", "全部", Map.of(
         "rows", List.of(
             Map.of("year", "2024", "graduates", 1179),
@@ -3866,12 +4042,17 @@ public class CompassService {
   }
 
   private void seedSource(long id, String name, String type, String url, String frequency, String path, String trust, String status) {
+    seedSource(id, name, type, url, frequency, path, trust, status, Map.of());
+  }
+
+  private void seedSource(long id, String name, String type, String url, String frequency, String path, String trust, String status, Map<String, Object> parserRule) {
     jdbc.update(
         """
-        insert into data_source (id, name, source_type, source_url, crawl_frequency, path, trust_level, status, last_crawl_at)
-        values (?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
+        insert into data_source (id, name, source_type, source_url, crawl_frequency, path, trust_level, parser_rule_json, status, last_crawl_at)
+        values (?, ?, ?, ?, ?, ?, ?, cast(? as json), ?, current_timestamp)
         on duplicate key update name = values(name), source_type = values(source_type), source_url = values(source_url),
-          crawl_frequency = values(crawl_frequency), path = values(path), trust_level = values(trust_level), status = values(status)
+          crawl_frequency = values(crawl_frequency), path = values(path), trust_level = values(trust_level),
+          parser_rule_json = values(parser_rule_json), status = values(status)
         """,
         id,
         name,
@@ -3880,7 +4061,19 @@ public class CompassService {
         frequency,
         path,
         trust,
+        toJson(parserRule == null ? Map.of() : parserRule),
         status
+    );
+  }
+
+  private Map<String, Object> realtimeRule(int maxAgeDays, String... includeKeywords) {
+    return Map.of(
+        "maxAgeDays", maxAgeDays,
+        "maxLinks", 12,
+        "maxPages", 5,
+        "minScore", 2,
+        "includeKeywords", List.of(includeKeywords),
+        "excludeKeywords", List.of("登录", "注册", "客户端下载", "APP下载", "帮助", "版权声明")
     );
   }
 

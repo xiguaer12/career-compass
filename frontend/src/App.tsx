@@ -4101,7 +4101,7 @@ function AdminView() {
               <label>
                 <span>抓取频率</span>
                 <select value={sourceForm.frequency} onChange={(event) => setSourceForm({ ...sourceForm, frequency: event.target.value })}>
-                  {["每日", "每周", "每月", "手动"].map((item) => <option key={item} value={item}>{item}</option>)}
+                  {["每小时", "每日", "每周", "每月", "手动"].map((item) => <option key={item} value={item}>{item}</option>)}
                 </select>
               </label>
               <label>
