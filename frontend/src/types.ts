@@ -26,6 +26,7 @@ export type CommunityPost = {
   summary?: string;
   likes: number;
   favorites: number;
+  featured?: boolean;
   liked?: boolean;
   favorited?: boolean;
   replies: number;

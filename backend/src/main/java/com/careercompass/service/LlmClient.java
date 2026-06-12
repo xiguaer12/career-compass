@@ -17,12 +17,149 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 @Service
 public class LlmClient {
+  public static final String REPORT_SYSTEM_PROMPT = """
+      你是高校毕业路径规划系统的 AI 报告生成器。
+      系统会根据访谈素材另行计算考公、考研、就业三路径动态评分；你的任务是解释这些评分背后的取舍，而不是重新输出 JSON 字段。
+      可以使用小标题、段落、列表或 Markdown，但不要输出 JSON，不要输出字段名，不要为了适配系统而压缩判断。
+      """;
+  public static final String ANSWER_SYSTEM_PROMPT = """
+      你是高校毕业路径规划系统的报告追问助手。
+      你可以像咨询老师继续对话一样自由回答，不需要按固定维度分栏，也不要输出 JSON。
+      可以使用自然段、简短小标题或必要的列表，但不要为了结构化而牺牲判断的完整性和语气的自然度。
+      """;
+  public static final String INTERVIEW_SYSTEM_PROMPT = "你是高校职业路径开放访谈助手。你要像耐心的咨询老师一样接住学生表达，整理其中和职业选择有关的信号，再给出轻量引导。为了让前端保存对话状态，请输出一个 JSON 对象；JSON 只用于接口传输，answers 必须是开放素材，不是固定问卷。";
+  public static final String CRAWL_SUMMARY_SYSTEM_PROMPT = "你是面向上海理工大学本科生的高校毕业路径信息差分析助手。为了让后台审核队列解析候选资讯，请输出一个 JSON 对象，不要在 JSON 外输出 Markdown。";
+  public static final String REPORT_USER_PROMPT_TEMPLATE = """
+      请基于学生开放访谈素材，直接生成一篇完整报告。
+
+      写作目标：
+      1. 先理解学生表达的全部上下文，包括经历、学业、项目/实习、家庭与经济约束、城市偏好、性格、情绪压力、资源条件、价值排序、隐含顾虑和未说透的矛盾。
+      2. 结合系统动态评分比较考公、考研、就业，也可以提出更适合学生语境的判断框架；如果分数和正文判断存在张力，请解释张力来自哪些素材。
+      3. 报告应该像真实咨询后的判断：有综合画像，有推理依据，有不确定性提醒，有下一步建议，但表达方式由你根据材料自由组织。
+      4. 不要承诺录取、上岸、就业结果；不要假装知道学生没有提到的事实。
+      5. 如果素材不足，请明确说明哪些判断只是初步假设，并自然地提出后续需要补充的信息。
+      6. 如果写 30/60/90 天行动计划，请写成具体可执行的步骤：包含信息核对、材料整理、真实反馈、复盘节点和备选路径维护，不要只写泛泛口号。
+      7. 末尾保留免责声明，但不要为了免责声明牺牲报告正文的可读性。
+
+      系统动态评分 JSON（仅用于写作解释，接口会单独保存这些结构化评分）：
+      {scoresJson}
+
+      报告模板（仅作可选参考，不构成字段或结构约束；如果其中要求评分、表格或固定模块，请忽略这些格式约束）：
+      {reportTemplate}
+
+      提示词模板（仅作写作方向参考；如果与“自由生成完整报告”冲突，以自由报告为准）：
+      {promptTemplate}
+
+      免责声明：
+      {disclaimer}
+
+      开放访谈素材 JSON：
+      {answersJson}
+      """;
+  public static final String ANSWER_USER_PROMPT_TEMPLATE = """
+      请围绕已有 AI 报告和最近对话历史回答学生追问。你可以自由组织内容：先回应学生真正关心的问题，再结合报告正文补充判断、取舍、风险和下一步动作。
+
+      写作要求：
+      1. 不要机械拆成“因素/路径比较/建议/提醒”等固定栏目。
+      2. 可以自然比较考公、考研、就业，也可以指出问题背后更重要的约束或矛盾。
+      3. 如果学生问得很具体，就直接给具体判断；如果信息不足，就说明还缺什么，并给出可执行的补充验证方式。
+      4. 不要承诺录取、上岸或就业结果；不要编造报告和学生对话中没有的信息。
+      5. 语气要像继续读完报告后的追问交流，允许有推理、有取舍、有不确定性，不要像表格模板。
+
+      提示词模板：
+      {promptTemplate}
+
+      学生问题：
+      {question}
+
+      已有报告 JSON：
+      {reportJson}
+
+      最近对话历史 JSON：
+      {historyJson}
+      """;
+  public static final String INTERVIEW_USER_PROMPT_TEMPLATE = """
+      请根据已有对话继续访谈学生。目标是替代传统问卷，通过自然对话整理足够素材来生成考公、考研、就业三路径报告。
+      你需要自己理解学生提到的各方面情况，包括学业、项目、实习、家庭、城市、经济、性格、情绪、价值排序、机会资源、隐含顾虑和未说透的矛盾，再做综合整理。
+
+      学生基础档案（系统上下文，必须纳入理解，不要要求学生重复提供）：
+      {studentContext}
+
+      访谈原则：
+      1. 你的问题只是思维发散引导，不是必须逐题回答的问卷。学生说到问题之外的家庭、情绪、经历、城市、资源、担忧、偏好，都要主动加工整理进 answers。
+      2. 开场和早期追问要给出轻量入口，例如“最近纠结的一件事”“一段项目/实习/课程/考证经历”“城市、家庭、收入、成长里最在意的因素”，但这些入口都只是可选引导。
+      3. 不要因为某个字段没被正面回答就换个问法反复追问；先总结已获得的信息，再顺势抛出 1 个开放问题，最多 2 个。
+      4. 可以用例子、选择项和追问帮助表达，但不要要求学生给考公、考研、就业三条路打分，也不要直接问“三选一”。
+      5. 不要承诺录取、上岸或就业结果。
+      6. 当已有素材能生成有价值的初版报告时 readyToGenerate=true，并给出一句“可以先生成草案，后续还能继续补充”的确认说明；不要求所有字段完整。
+      7. answers 是开放素材对象，不要按固定问卷字段填写，也不要输出 academic/certificates/project/city/riskPreference/employmentInterest 这类固定问卷键。
+      8. answers 可以由你自由组织字段，例如 rawNarrative、profileSummary、keyExperiences、valuesAndMotivation、constraintsAndEmotions、decisionSignals、pathHypotheses、openQuestions、openNotes；字段名可以按语义自行增加。
+      9. pathHypotheses 可以表达你对考公、考研、就业的初步假设和证据，但不要要求学生给路径打分，也不要把判断压成 1-5 分。
+      10. missingFields 字段不是缺失项，而是“可以继续探索的方向”，请输出中文短语，例如“项目和实习经历”“城市与家庭约束”，不要输出英文字段名。
+
+      输出 JSON schema：
+      {
+        "assistantMessage": "string",
+        "profileSummary": "string",
+        "decisionSignals": ["string"],
+        "answers": {
+          "rawNarrative": "string",
+          "profileSummary": "string",
+          "keyExperiences": ["string"],
+          "valuesAndMotivation": ["string"],
+          "constraintsAndEmotions": ["string"],
+          "decisionSignals": ["string"],
+          "pathHypotheses": [{"path": "考公|考研|就业", "evidence": "string", "concern": "string"}],
+          "openNotes": {"任意中文键": "string"}
+        },
+        "completionPercent": 0,
+        "readyToGenerate": false,
+        "missingFields": ["string"]
+      }
+
+      当前对话 JSON：
+      {messagesJson}
+      """;
+  public static final String CRAWL_SUMMARY_USER_PROMPT_TEMPLATE = """
+      请把公开网页内容加工为三路径页面的待审核候选资讯。目标用户是上海理工大学本科生，内容必须优先服务其就业、考研、考公决策，而不是写泛泛新闻摘要。要求：
+      1. 只根据原文内容提炼，不编造政策、时间、数字或结论。
+      2. path 只能是 考公、考研、就业 三者之一；如果难以判断，优先使用来源配置路径。
+      3. title 要具体，优先体现“岗位表/报名时间/资格条件/复试调剂/专业目录/招聘会/劳动权益”等上理工本科生可行动信息。
+      4. summary 控制在 100-220 个中文字符，必须说明上理工本科生能从这条信息中获得什么实用判断。
+      5. body 控制在 260-700 个中文字符，按“关键信息、对上理本科生的作用、学生应核对字段、下一步动作、风险提醒”组织；如果原文是门户首页，也要说明这个源适合查什么，不要硬编具体结论。
+      6. tags 输出 2-5 个短标签，优先使用 报名时间、岗位表、专业目录、调剂、复试、招聘会、劳动合同、薪酬福利、资格复审 等。
+      7. qualityScore 为 0-100，核心评估“是否适合上海理工大学本科生”：上海/长三角、本科生/应届生、校招实习、事业单位招录、考研复试调剂、专业目录、岗位表、报名截止等可直接行动的信息应高分；门户首页、网站工作报表、领导活动、机构介绍、登录入口、查询入口、页面无详细内容、纯导航、泛泛政策且缺少学生动作的信息必须低于 45 分，并在 reason 说明。
+
+      输出 JSON schema：
+      {
+        "title": "string",
+        "summary": "string",
+        "body": "string",
+        "path": "考公|考研|就业",
+        "tags": ["string"],
+        "qualityScore": 0,
+        "reason": "string"
+      }
+
+      来源名称：{sourceName}
+      来源类型：{sourceType}
+      来源配置路径：{preferredPath}
+      URL：{url}
+      原始标题：{rawTitle}
+      原文清洗文本：
+      {rawText}
+      """;
+
+  private static final Pattern PROMPT_VARIABLE_PATTERN = Pattern.compile("\\{([A-Za-z][A-Za-z0-9_]*)\\}");
+
   private final ObjectMapper objectMapper;
   private final HttpClient httpClient;
   private final boolean enabled;
@@ -66,6 +203,8 @@ public class LlmClient {
       String questionnaireVersion,
       String templateVersion,
       String promptVersion,
+      String systemPromptTemplate,
+      String userPromptTemplate,
       String reportTemplate,
       String promptTemplate,
       String disclaimer,
@@ -73,38 +212,21 @@ public class LlmClient {
   ) {
     requireAvailable();
     String reportText = chatText(
-        """
-        你是高校毕业路径规划系统的 AI 报告生成器。
-        系统会根据访谈素材另行计算考公、考研、就业三路径动态评分；你的任务是解释这些评分背后的取舍，而不是重新输出 JSON 字段。
-        可以使用小标题、段落、列表或 Markdown，但不要输出 JSON，不要输出字段名，不要为了适配系统而压缩判断。
-        """,
-        """
-        请基于学生开放访谈素材，直接生成一篇完整报告。
-
-        写作目标：
-        1. 先理解学生表达的全部上下文，包括经历、学业、项目/实习、家庭与经济约束、城市偏好、性格、情绪压力、资源条件、价值排序、隐含顾虑和未说透的矛盾。
-        2. 结合系统动态评分比较考公、考研、就业，也可以提出更适合学生语境的判断框架；如果分数和正文判断存在张力，请解释张力来自哪些素材。
-        3. 报告应该像真实咨询后的判断：有综合画像，有推理依据，有不确定性提醒，有下一步建议，但表达方式由你根据材料自由组织。
-        4. 不要承诺录取、上岸、就业结果；不要假装知道学生没有提到的事实。
-        5. 如果素材不足，请明确说明哪些判断只是初步假设，并自然地提出后续需要补充的信息。
-        6. 如果写 30/60/90 天行动计划，请写成具体可执行的步骤：包含信息核对、材料整理、真实反馈、复盘节点和备选路径维护，不要只写泛泛口号。
-        7. 末尾保留免责声明，但不要为了免责声明牺牲报告正文的可读性。
-
-        系统动态评分 JSON（仅用于写作解释，接口会单独保存这些结构化评分）：
-        %s
-
-        报告模板（仅作可选参考，不构成字段或结构约束；如果其中要求评分、表格或固定模块，请忽略这些格式约束）：
-        %s
-
-        提示词模板（仅作写作方向参考；如果与“自由生成完整报告”冲突，以自由报告为准）：
-        %s
-
-        免责声明：
-        %s
-
-        开放访谈素材 JSON：
-        %s
-        """.formatted(toJson(Map.of("scores", fallback.scores(), "dimensions", fallback.dimensions())), reportTemplate, promptTemplate, disclaimer, toJson(answers))
+        effectiveSystemPrompt(systemPromptTemplate, REPORT_SYSTEM_PROMPT),
+        renderPromptTemplate(
+            userPromptTemplate,
+            REPORT_USER_PROMPT_TEMPLATE,
+            Map.of(
+                "scoresJson", toJson(Map.of(
+                    "scores", fallback.scores() == null ? List.of() : fallback.scores(),
+                    "dimensions", fallback.dimensions() == null ? List.of() : fallback.dimensions()
+                )),
+                "reportTemplate", stringValue(reportTemplate, ""),
+                "promptTemplate", stringValue(promptTemplate, ""),
+                "disclaimer", stringValue(disclaimer, ""),
+                "answersJson", toJson(answers)
+            )
+        )
     );
     String summary = summaryFromReport(reportText);
     return new AiReport(
@@ -128,89 +250,39 @@ public class LlmClient {
     );
   }
 
-  public AiAnswer answer(AiReport report, AiQuestion question, String promptTemplate, AiAnswer fallback) {
+  public AiAnswer answer(AiReport report, AiQuestion question, String systemPromptTemplate, String userPromptTemplate, String promptTemplate, AiAnswer fallback) {
     requireAvailable();
     if (report == null) return fallback;
     String asked = question == null || !StringUtils.hasText(question.question()) ? "如何安排下一步行动" : question.question();
     String answerText = chatText(
-        """
-        你是高校毕业路径规划系统的报告追问助手。
-        你可以像咨询老师继续对话一样自由回答，不需要按固定维度分栏，也不要输出 JSON。
-        可以使用自然段、简短小标题或必要的列表，但不要为了结构化而牺牲判断的完整性和语气的自然度。
-        """,
-        """
-        请围绕已有 AI 报告和最近对话历史回答学生追问。你可以自由组织内容：先回应学生真正关心的问题，再结合报告正文补充判断、取舍、风险和下一步动作。
-
-        写作要求：
-        1. 不要机械拆成“因素/路径比较/建议/提醒”等固定栏目。
-        2. 可以自然比较考公、考研、就业，也可以指出问题背后更重要的约束或矛盾。
-        3. 如果学生问得很具体，就直接给具体判断；如果信息不足，就说明还缺什么，并给出可执行的补充验证方式。
-        4. 不要承诺录取、上岸或就业结果；不要编造报告和学生对话中没有的信息。
-        5. 语气要像继续读完报告后的追问交流，允许有推理、有取舍、有不确定性，不要像表格模板。
-
-        提示词模板：
-        %s
-
-        学生问题：
-        %s
-
-        已有报告 JSON：
-        %s
-
-        最近对话历史 JSON：
-        %s
-        """.formatted(promptTemplate, asked, toJson(report), toJson(question == null ? List.of() : question.history()))
+        effectiveSystemPrompt(systemPromptTemplate, ANSWER_SYSTEM_PROMPT),
+        renderPromptTemplate(
+            userPromptTemplate,
+            ANSWER_USER_PROMPT_TEMPLATE,
+            Map.of(
+                "promptTemplate", stringValue(promptTemplate, ""),
+                "question", asked,
+                "reportJson", toJson(report),
+                "historyJson", toJson(question == null ? List.of() : question.history())
+            )
+        )
     );
     return new AiAnswer("", List.of(), List.of(), List.of(), List.of(), answerText);
   }
 
-  public InterviewResponse interview(List<Map<String, String>> messages, StudentProfile profile, InterviewResponse fallback) {
+  public InterviewResponse interview(List<Map<String, String>> messages, StudentProfile profile, String systemPromptTemplate, String userPromptTemplate, InterviewResponse fallback) {
     requireAvailable();
     String studentContext = studentContext(profile);
     Map<String, Object> payload = chatJson(
-        "你是高校职业路径开放访谈助手。你要像耐心的咨询老师一样接住学生表达，整理其中和职业选择有关的信号，再给出轻量引导。为了让前端保存对话状态，请输出一个 JSON 对象；JSON 只用于接口传输，answers 必须是开放素材，不是固定问卷。",
-        """
-        请根据已有对话继续访谈学生。目标是替代传统问卷，通过自然对话整理足够素材来生成考公、考研、就业三路径报告。
-        你需要自己理解学生提到的各方面情况，包括学业、项目、实习、家庭、城市、经济、性格、情绪、价值排序、机会资源、隐含顾虑和未说透的矛盾，再做综合整理。
-
-        学生基础档案（系统上下文，必须纳入理解，不要要求学生重复提供）：
-        %s
-
-        访谈原则：
-        1. 你的问题只是思维发散引导，不是必须逐题回答的问卷。学生说到问题之外的家庭、情绪、经历、城市、资源、担忧、偏好，都要主动加工整理进 answers。
-        2. 开场和早期追问要给出轻量入口，例如“最近纠结的一件事”“一段项目/实习/课程/考证经历”“城市、家庭、收入、成长里最在意的因素”，但这些入口都只是可选引导。
-        3. 不要因为某个字段没被正面回答就换个问法反复追问；先总结已获得的信息，再顺势抛出 1 个开放问题，最多 2 个。
-        4. 可以用例子、选择项和追问帮助表达，但不要要求学生给考公、考研、就业三条路打分，也不要直接问“三选一”。
-        5. 不要承诺录取、上岸或就业结果。
-        6. 当已有素材能生成有价值的初版报告时 readyToGenerate=true，并给出一句“可以先生成草案，后续还能继续补充”的确认说明；不要求所有字段完整。
-        7. answers 是开放素材对象，不要按固定问卷字段填写，也不要输出 academic/certificates/project/city/riskPreference/employmentInterest 这类固定问卷键。
-        8. answers 可以由你自由组织字段，例如 rawNarrative、profileSummary、keyExperiences、valuesAndMotivation、constraintsAndEmotions、decisionSignals、pathHypotheses、openQuestions、openNotes；字段名可以按语义自行增加。
-        9. pathHypotheses 可以表达你对考公、考研、就业的初步假设和证据，但不要要求学生给路径打分，也不要把判断压成 1-5 分。
-        10. missingFields 字段不是缺失项，而是“可以继续探索的方向”，请输出中文短语，例如“项目和实习经历”“城市与家庭约束”，不要输出英文字段名。
-
-        输出 JSON schema：
-        {
-          "assistantMessage": "string",
-          "profileSummary": "string",
-          "decisionSignals": ["string"],
-          "answers": {
-            "rawNarrative": "string",
-            "profileSummary": "string",
-            "keyExperiences": ["string"],
-            "valuesAndMotivation": ["string"],
-            "constraintsAndEmotions": ["string"],
-            "decisionSignals": ["string"],
-            "pathHypotheses": [{"path": "考公|考研|就业", "evidence": "string", "concern": "string"}],
-            "openNotes": {"任意中文键": "string"}
-          },
-          "completionPercent": 0,
-          "readyToGenerate": false,
-          "missingFields": ["string"]
-        }
-
-        当前对话 JSON：
-        %s
-        """.formatted(studentContext, toJson(messages == null ? List.of() : messages))
+        effectiveSystemPrompt(systemPromptTemplate, INTERVIEW_SYSTEM_PROMPT),
+        renderPromptTemplate(
+            userPromptTemplate,
+            INTERVIEW_USER_PROMPT_TEMPLATE,
+            Map.of(
+                "studentContext", studentContext,
+                "messagesJson", toJson(messages == null ? List.of() : messages)
+            )
+        )
     );
     return interviewFromPayload(payload, fallback);
   }
@@ -222,40 +294,25 @@ public class LlmClient {
       String url,
       String rawTitle,
       String rawText,
+      String systemPromptTemplate,
+      String userPromptTemplate,
       Map<String, Object> fallback
   ) {
     requireAvailable();
     Map<String, Object> payload = chatJson(
-        "你是高校毕业路径信息差分析助手。为了让后台审核队列解析候选资讯，请输出一个 JSON 对象，不要在 JSON 外输出 Markdown。",
-        """
-        请把公开网页内容加工为三路径页面的待审核候选资讯，目标是帮助学生打破信息差，而不是写泛泛新闻摘要。要求：
-        1. 只根据原文内容提炼，不编造政策、时间、数字或结论。
-        2. path 只能是 考公、考研、就业 三者之一；如果难以判断，优先使用来源配置路径。
-        3. title 要具体，优先体现“岗位表/报名时间/资格条件/复试调剂/专业目录/招聘会/劳动权益”等可行动信息。
-        4. summary 控制在 100-220 个中文字符，必须说明学生能从这条信息中获得什么实用判断。
-        5. body 控制在 260-700 个中文字符，按“关键信息、学生应核对字段、下一步动作、风险提醒”组织；如果原文是门户首页，也要说明这个源适合查什么，不要硬编具体结论。
-        6. tags 输出 2-5 个短标签，优先使用 报名时间、岗位表、专业目录、调剂、复试、招聘会、劳动合同、薪酬福利、资格复审 等。
-        7. qualityScore 为 0-100，综合来源可信度、时效性、内容完整度；门户首页或信息过泛要降分并在 reason 说明。
-
-        输出 JSON schema：
-        {
-          "title": "string",
-          "summary": "string",
-          "body": "string",
-          "path": "考公|考研|就业",
-          "tags": ["string"],
-          "qualityScore": 0,
-          "reason": "string"
-        }
-
-        来源名称：%s
-        来源类型：%s
-        来源配置路径：%s
-        URL：%s
-        原始标题：%s
-        原文清洗文本：
-        %s
-        """.formatted(sourceName, sourceType, preferredPath, url, rawTitle, trimForPrompt(rawText, 6000))
+        effectiveSystemPrompt(systemPromptTemplate, CRAWL_SUMMARY_SYSTEM_PROMPT),
+        renderPromptTemplate(
+            userPromptTemplate,
+            CRAWL_SUMMARY_USER_PROMPT_TEMPLATE,
+            Map.of(
+                "sourceName", stringValue(sourceName, "公开来源"),
+                "sourceType", stringValue(sourceType, "公开来源"),
+                "preferredPath", stringValue(preferredPath, "就业"),
+                "url", stringValue(url, ""),
+                "rawTitle", stringValue(rawTitle, ""),
+                "rawText", trimForPrompt(rawText, 6000)
+            )
+        )
     );
     return crawlCandidateFromPayload(payload, fallback, preferredPath);
   }
@@ -301,6 +358,24 @@ public class LlmClient {
     } catch (Exception exception) {
       throw new IllegalStateException("AI助手当前繁忙，请稍后再试", exception);
     }
+  }
+
+  private String effectiveSystemPrompt(String systemPromptTemplate, String defaultPrompt) {
+    if (StringUtils.hasText(systemPromptTemplate)) return systemPromptTemplate.strip();
+    return defaultPrompt.strip();
+  }
+
+  private String renderPromptTemplate(String template, String defaultTemplate, Map<String, String> variables) {
+    String source = StringUtils.hasText(template) ? template : defaultTemplate;
+    Matcher matcher = PROMPT_VARIABLE_PATTERN.matcher(source);
+    StringBuffer rendered = new StringBuffer();
+    while (matcher.find()) {
+      String variableName = matcher.group(1);
+      String replacement = variables.get(variableName);
+      matcher.appendReplacement(rendered, Matcher.quoteReplacement(replacement == null ? matcher.group(0) : replacement));
+    }
+    matcher.appendTail(rendered);
+    return rendered.toString().strip();
   }
 
   private Map<String, Object> chatJson(String systemPrompt, String userPrompt) {

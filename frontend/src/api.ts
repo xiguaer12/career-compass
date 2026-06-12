@@ -319,15 +319,6 @@ export type ChartImportResult = {
   errors: ChartImportError[];
 };
 
-export type TagItem = {
-  id: number;
-  name: string;
-  type: string;
-  status: string;
-  sortOrder: number;
-  createdAt: string;
-};
-
 export type AiConfigItem = {
   id: number;
   configType: string;
@@ -591,14 +582,6 @@ export const adminApi = {
   },
   refreshCharts: (token: string) =>
     api<Record<string, unknown>>("/admin/charts/refresh", { method: "POST" }, token),
-  tags: (token: string, type = "") =>
-    api<TagItem[]>(`/admin/tags${type ? `?type=${encodeURIComponent(type)}` : ""}`, {}, token),
-  saveTag: (token: string, tag: Partial<TagItem>) =>
-    api<Record<string, unknown>>(
-      "/admin/tags/save",
-      { method: "POST", body: JSON.stringify({ id: tag.id, name: tag.name, type: tag.type, status: tag.status, sortOrder: tag.sortOrder }) },
-      token
-    ),
   aiConfigs: (token: string, type = "") =>
     api<AiConfigItem[]>(`/admin/ai/configs${type ? `?type=${encodeURIComponent(type)}` : ""}`, {}, token),
   saveAiConfig: (token: string, config: Partial<AiConfigItem>) =>

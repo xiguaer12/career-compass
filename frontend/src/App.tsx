@@ -4,6 +4,7 @@ import {
   BarChart3,
   Bell,
   Bot,
+  BriefcaseBusiness,
   CheckCircle2,
   ClipboardList,
   Clock3,
@@ -15,7 +16,9 @@ import {
   ExternalLink,
   FileText,
   Flag,
+  GraduationCap,
   Heart,
+  Landmark,
   LayoutDashboard,
   LockKeyhole,
   LogIn,
@@ -90,7 +93,6 @@ import {
   type Session,
   type StudentProfile,
   type StudentAdminItem,
-  type TagItem,
   type WorkbenchResponse
 } from "./api";
 import { visibleFavoriteItems } from "./utils";
@@ -138,7 +140,152 @@ type ChartSeries = {
   color?: string;
 };
 
+type ChartDataRow = Record<string, unknown>;
+
+const reportSystemPrompt = `你是高校毕业路径规划系统的 AI 报告生成器。
+系统会根据访谈素材另行计算考公、考研、就业三路径动态评分；你的任务是解释这些评分背后的取舍，而不是重新输出 JSON 字段。
+可以使用小标题、段落、列表或 Markdown，但不要输出 JSON，不要输出字段名，不要为了适配系统而压缩判断。`;
+
+const answerSystemPrompt = `你是高校毕业路径规划系统的报告追问助手。
+你可以像咨询老师继续对话一样自由回答，不需要按固定维度分栏，也不要输出 JSON。
+可以使用自然段、简短小标题或必要的列表，但不要为了结构化而牺牲判断的完整性和语气的自然度。`;
+
+const interviewSystemPrompt = "你是高校职业路径开放访谈助手。你要像耐心的咨询老师一样接住学生表达，整理其中和职业选择有关的信号，再给出轻量引导。为了让前端保存对话状态，请输出一个 JSON 对象；JSON 只用于接口传输，answers 必须是开放素材，不是固定问卷。";
+
+const crawlSummarySystemPrompt = "你是面向上海理工大学本科生的高校毕业路径信息差分析助手。为了让后台审核队列解析候选资讯，请输出一个 JSON 对象，不要在 JSON 外输出 Markdown。";
+
+const reportUserPromptTemplate = `请基于学生开放访谈素材，直接生成一篇完整报告。
+
+写作目标：
+1. 先理解学生表达的全部上下文，包括经历、学业、项目/实习、家庭与经济约束、城市偏好、性格、情绪压力、资源条件、价值排序、隐含顾虑和未说透的矛盾。
+2. 结合系统动态评分比较考公、考研、就业，也可以提出更适合学生语境的判断框架；如果分数和正文判断存在张力，请解释张力来自哪些素材。
+3. 报告应该像真实咨询后的判断：有综合画像，有推理依据，有不确定性提醒，有下一步建议，但表达方式由你根据材料自由组织。
+4. 不要承诺录取、上岸、就业结果；不要假装知道学生没有提到的事实。
+5. 如果素材不足，请明确说明哪些判断只是初步假设，并自然地提出后续需要补充的信息。
+6. 如果写 30/60/90 天行动计划，请写成具体可执行的步骤：包含信息核对、材料整理、真实反馈、复盘节点和备选路径维护，不要只写泛泛口号。
+7. 末尾保留免责声明，但不要为了免责声明牺牲报告正文的可读性。
+
+系统动态评分 JSON（仅用于写作解释，接口会单独保存这些结构化评分）：
+{scoresJson}
+
+报告模板（仅作可选参考，不构成字段或结构约束；如果其中要求评分、表格或固定模块，请忽略这些格式约束）：
+{reportTemplate}
+
+提示词模板（仅作写作方向参考；如果与“自由生成完整报告”冲突，以自由报告为准）：
+{promptTemplate}
+
+免责声明：
+{disclaimer}
+
+开放访谈素材 JSON：
+{answersJson}`;
+
+const answerUserPromptTemplate = `请围绕已有 AI 报告和最近对话历史回答学生追问。你可以自由组织内容：先回应学生真正关心的问题，再结合报告正文补充判断、取舍、风险和下一步动作。
+
+写作要求：
+1. 不要机械拆成“因素/路径比较/建议/提醒”等固定栏目。
+2. 可以自然比较考公、考研、就业，也可以指出问题背后更重要的约束或矛盾。
+3. 如果学生问得很具体，就直接给具体判断；如果信息不足，就说明还缺什么，并给出可执行的补充验证方式。
+4. 不要承诺录取、上岸或就业结果；不要编造报告和学生对话中没有的信息。
+5. 语气要像继续读完报告后的追问交流，允许有推理、有取舍、有不确定性，不要像表格模板。
+
+提示词模板：
+{promptTemplate}
+
+学生问题：
+{question}
+
+已有报告 JSON：
+{reportJson}
+
+最近对话历史 JSON：
+{historyJson}`;
+
+const interviewUserPromptTemplate = `请根据已有对话继续访谈学生。目标是替代传统问卷，通过自然对话整理足够素材来生成考公、考研、就业三路径报告。
+你需要自己理解学生提到的各方面情况，包括学业、项目、实习、家庭、城市、经济、性格、情绪、价值排序、机会资源、隐含顾虑和未说透的矛盾，再做综合整理。
+
+学生基础档案（系统上下文，必须纳入理解，不要要求学生重复提供）：
+{studentContext}
+
+访谈原则：
+1. 你的问题只是思维发散引导，不是必须逐题回答的问卷。学生说到问题之外的家庭、情绪、经历、城市、资源、担忧、偏好，都要主动加工整理进 answers。
+2. 开场和早期追问要给出轻量入口，例如“最近纠结的一件事”“一段项目/实习/课程/考证经历”“城市、家庭、收入、成长里最在意的因素”，但这些入口都只是可选引导。
+3. 不要因为某个字段没被正面回答就换个问法反复追问；先总结已获得的信息，再顺势抛出 1 个开放问题，最多 2 个。
+4. 可以用例子、选择项和追问帮助表达，但不要要求学生给考公、考研、就业三条路打分，也不要直接问“三选一”。
+5. 不要承诺录取、上岸或就业结果。
+6. 当已有素材能生成有价值的初版报告时 readyToGenerate=true，并给出一句“可以先生成草案，后续还能继续补充”的确认说明；不要求所有字段完整。
+7. answers 是开放素材对象，不要按固定问卷字段填写，也不要输出 academic/certificates/project/city/riskPreference/employmentInterest 这类固定问卷键。
+8. answers 可以由你自由组织字段，例如 rawNarrative、profileSummary、keyExperiences、valuesAndMotivation、constraintsAndEmotions、decisionSignals、pathHypotheses、openQuestions、openNotes；字段名可以按语义自行增加。
+9. pathHypotheses 可以表达你对考公、考研、就业的初步假设和证据，但不要要求学生给路径打分，也不要把判断压成 1-5 分。
+10. missingFields 字段不是缺失项，而是“可以继续探索的方向”，请输出中文短语，例如“项目和实习经历”“城市与家庭约束”，不要输出英文字段名。
+
+输出 JSON schema：
+{
+  "assistantMessage": "string",
+  "profileSummary": "string",
+  "decisionSignals": ["string"],
+  "answers": {
+    "rawNarrative": "string",
+    "profileSummary": "string",
+    "keyExperiences": ["string"],
+    "valuesAndMotivation": ["string"],
+    "constraintsAndEmotions": ["string"],
+    "decisionSignals": ["string"],
+    "pathHypotheses": [{"path": "考公|考研|就业", "evidence": "string", "concern": "string"}],
+    "openNotes": {"任意中文键": "string"}
+  },
+  "completionPercent": 0,
+  "readyToGenerate": false,
+  "missingFields": ["string"]
+}
+
+当前对话 JSON：
+{messagesJson}`;
+
+const crawlSummaryUserPromptTemplate = `请把公开网页内容加工为三路径页面的待审核候选资讯。目标用户是上海理工大学本科生，内容必须优先服务其就业、考研、考公决策，而不是写泛泛新闻摘要。要求：
+1. 只根据原文内容提炼，不编造政策、时间、数字或结论。
+2. path 只能是 考公、考研、就业 三者之一；如果难以判断，优先使用来源配置路径。
+3. title 要具体，优先体现“岗位表/报名时间/资格条件/复试调剂/专业目录/招聘会/劳动权益”等上理工本科生可行动信息。
+4. summary 控制在 100-220 个中文字符，必须说明上理工本科生能从这条信息中获得什么实用判断。
+5. body 控制在 260-700 个中文字符，按“关键信息、对上理本科生的作用、学生应核对字段、下一步动作、风险提醒”组织；如果原文是门户首页，也要说明这个源适合查什么，不要硬编具体结论。
+6. tags 输出 2-5 个短标签，优先使用 报名时间、岗位表、专业目录、调剂、复试、招聘会、劳动合同、薪酬福利、资格复审 等。
+7. qualityScore 为 0-100，核心评估“是否适合上海理工大学本科生”：上海/长三角、本科生/应届生、校招实习、事业单位招录、考研复试调剂、专业目录、岗位表、报名截止等可直接行动的信息应高分；门户首页、网站工作报表、领导活动、机构介绍、登录入口、查询入口、页面无详细内容、纯导航、泛泛政策且缺少学生动作的信息必须低于 45 分，并在 reason 说明。
+
+输出 JSON schema：
+{
+  "title": "string",
+  "summary": "string",
+  "body": "string",
+  "path": "考公|考研|就业",
+  "tags": ["string"],
+  "qualityScore": 0,
+  "reason": "string"
+}
+
+来源名称：{sourceName}
+来源类型：{sourceType}
+来源配置路径：{preferredPath}
+URL：{url}
+原始标题：{rawTitle}
+原文清洗文本：
+{rawText}`;
+
+const answerFallbackTemplate = `你正在追问：{question}
+
+我会把这份报告里的综合正文、路径排序、行动计划和你补充的问题放在一起看。比较稳妥的做法是：先沿着报告里的主路径推进一轮低成本验证，同时保留一个备选路径的小时间块；如果接下来两周的新信息明显改变了你的约束条件，再调整主次顺序。
+
+这类追问更适合结合你的最新补充继续细化，AI 建议只作为辅助判断，不代表录取、上岸或就业结果承诺。`;
+
 const aiConfigTypes = [
+  "report_system_prompt",
+  "report_user_prompt",
+  "answer_system_prompt",
+  "answer_user_prompt",
+  "answer_fallback_template",
+  "interview_system_prompt",
+  "interview_user_prompt",
+  "crawl_summary_system_prompt",
+  "crawl_summary_user_prompt",
   "prompt",
   "questionnaire",
   "report_template",
@@ -148,6 +295,71 @@ const aiConfigTypes = [
 ];
 
 const aiConfigTemplates: Record<string, { version: string; title: string; content: string }> = {
+  report_system_prompt: {
+    version: "RPT-SYS-2026.06",
+    title: "报告生成系统提示词",
+    content: reportSystemPrompt
+  },
+  report_user_prompt: {
+    version: "RPT-USER-2026.06",
+    title: "报告生成用户提示词",
+    content: reportUserPromptTemplate
+  },
+  answer_system_prompt: {
+    version: "ANS-SYS-2026.06",
+    title: "报告追问系统提示词",
+    content: answerSystemPrompt
+  },
+  answer_user_prompt: {
+    version: "ANS-USER-2026.06",
+    title: "报告追问用户提示词",
+    content: answerUserPromptTemplate
+  },
+  answer_fallback_template: {
+    version: "ANS-FALLBACK-2026.06",
+    title: "报告追问兜底回答模板",
+    content: answerFallbackTemplate
+  },
+  interview_system_prompt: {
+    version: "INT-SYS-2026.06",
+    title: "AI 访谈系统提示词",
+    content: interviewSystemPrompt
+  },
+  interview_user_prompt: {
+    version: "INT-USER-2026.06",
+    title: "AI 访谈用户提示词",
+    content: interviewUserPromptTemplate
+  },
+  crawl_summary_system_prompt: {
+    version: "CRAWL-SYS-2026.06",
+    title: "资讯抓取摘要系统提示词",
+    content: crawlSummarySystemPrompt
+  },
+  crawl_summary_user_prompt: {
+    version: "CRAWL-USER-2026.06",
+    title: "资讯抓取摘要用户提示词",
+    content: crawlSummaryUserPromptTemplate
+  },
+  prompt: {
+    version: "PROMPT-2026.06",
+    title: "报告追问提示词",
+    content: "基于学生档案、AI 访谈素材、报告正文和平台数据回答追问。回答必须给出可执行下一步，不承诺录取、上岸或就业结果；涉及政策、报名、岗位、招生信息时提醒学生核对官方来源。"
+  },
+  questionnaire: {
+    version: "QNR-2026.06",
+    title: "访谈问题模板",
+    content: "围绕学业基础、实践经历、城市偏好、家庭约束、风险承受度、考研/考公/就业倾向继续追问。每轮优先问一个具体问题，避免一次性抛出过多选项。"
+  },
+  report_template: {
+    version: "REPORT-2026.06",
+    title: "三路径报告结构",
+    content: "报告结构：1. 当前画像；2. 三路径适配度；3. 主要证据；4. 关键风险；5. 30 天行动计划；6. 需要继续核对的数据来源。语气保持谨慎、具体、可执行。"
+  },
+  disclaimer: {
+    version: "DISCLAIMER-2026.06",
+    title: "AI 决策免责声明",
+    content: "AI 报告仅供学生做生涯规划参考，不替代学生本人、学校老师、招生单位、招录单位或用人单位的正式判断。政策、考试、招聘和录取信息以官方最新公告为准。"
+  },
   algorithm_weights: {
     version: "WEIGHT-2026.06",
     title: "三路径匹配权重",
@@ -169,6 +381,115 @@ const aiConfigTemplates: Record<string, { version: string; title: string; conten
       maxTokens: 4000
     }, null, 2)
   }
+};
+
+const aiConfigGuides: Record<string, { label: string; target: string; publish: string }> = {
+  report_system_prompt: {
+    label: "报告生成系统提示词",
+    target: "对应后端报告生成接口的 system role，决定 AI 报告正文的角色、边界和输出口径",
+    publish: "修改后会影响新生成的 AI 报告；不要移除“不输出 JSON”和“不承诺结果”等边界"
+  },
+  report_user_prompt: {
+    label: "报告生成用户提示词",
+    target: "对应报告生成接口的 user prompt，也就是“请基于学生开放访谈素材...”这整段任务说明",
+    publish: "可调整写作目标和材料组织方式；请保留动态变量，否则报告会缺少学生素材或评分数据"
+  },
+  answer_system_prompt: {
+    label: "报告追问系统提示词",
+    target: "对应学生在报告页继续追问时的 system role，决定追问回答的表达方式",
+    publish: "修改后会影响新的报告追问回答；建议保留不编造、不承诺结果的要求"
+  },
+  answer_user_prompt: {
+    label: "报告追问用户提示词",
+    target: "对应报告追问接口的 user prompt，决定如何结合问题、报告和历史对话组织回答",
+    publish: "可调整追问回答结构；请保留问题、报告 JSON 和历史对话变量"
+  },
+  answer_fallback_template: {
+    label: "报告追问兜底回答模板",
+    target: "对应 AI 不可用或无报告时的 answerText 兜底文案",
+    publish: "可调整备用回答语气；请保留 {question} 变量"
+  },
+  interview_system_prompt: {
+    label: "AI 访谈系统提示词",
+    target: "对应 /api/assessment/interview 的 system role，决定开放访谈如何接住学生表达并输出 JSON 状态",
+    publish: "修改后会影响访谈对话；必须保留 JSON 对象和 answers 开放素材要求"
+  },
+  interview_user_prompt: {
+    label: "AI 访谈用户提示词",
+    target: "对应 /api/assessment/interview 的 user prompt，决定访谈原则、JSON schema 和上下文材料注入方式",
+    publish: "可调整访谈问题组织；请保留学生档案和当前对话变量"
+  },
+  crawl_summary_system_prompt: {
+    label: "资讯抓取摘要系统提示词",
+    target: "对应自动抓取资讯后的 AI 摘要解析，决定候选资讯如何面向上理本科生加工",
+    publish: "修改后会影响抓取候选质量；必须保留 JSON 输出和上理本科生适配口径"
+  },
+  crawl_summary_user_prompt: {
+    label: "资讯抓取摘要用户提示词",
+    target: "对应抓取候选解析的 user prompt，决定网页内容如何变成待审核资讯",
+    publish: "可调整质量评分和摘要规则；请保留来源信息和原文变量"
+  },
+  prompt: {
+    label: "追问与报告问答",
+    target: "影响学生在 AI 报告页继续追问时的回答风格",
+    publish: "确认文字无敏感承诺后发布"
+  },
+  questionnaire: {
+    label: "AI 访谈问题",
+    target: "影响学生工作台里的访谈问题组织方式",
+    publish: "建议先草稿测试，再发布"
+  },
+  report_template: {
+    label: "报告生成结构",
+    target: "影响 AI 报告的章节、证据和行动计划输出",
+    publish: "结构稳定后发布"
+  },
+  disclaimer: {
+    label: "免责声明",
+    target: "影响报告页与关键 AI 输出的风险提示文本",
+    publish: "法律和口径确认后发布"
+  },
+  algorithm_weights: {
+    label: "路径评分权重",
+    target: "影响考研、考公、就业三路径匹配分数",
+    publish: "权重合计必须为 100%"
+  },
+  model_params: {
+    label: "模型调用参数",
+    target: "影响回答发散程度、采样范围和最长输出",
+    publish: "数值稳定后发布"
+  }
+};
+
+const aiConfigVariables: Record<string, Array<{ name: string; description: string }>> = {
+  report_user_prompt: [
+    { name: "scoresJson", description: "系统计算出的三路径评分和维度数据" },
+    { name: "reportTemplate", description: "后台报告模板配置内容" },
+    { name: "promptTemplate", description: "后台通用提示词配置内容" },
+    { name: "disclaimer", description: "后台免责声明配置内容" },
+    { name: "answersJson", description: "学生开放访谈素材 JSON" }
+  ],
+  answer_user_prompt: [
+    { name: "promptTemplate", description: "后台通用提示词配置内容" },
+    { name: "question", description: "学生本次追问" },
+    { name: "reportJson", description: "学生已有 AI 报告 JSON" },
+    { name: "historyJson", description: "最近追问对话历史 JSON" }
+  ],
+  answer_fallback_template: [
+    { name: "question", description: "学生本次追问" }
+  ],
+  interview_user_prompt: [
+    { name: "studentContext", description: "学生学院、专业等基础档案" },
+    { name: "messagesJson", description: "当前访谈对话 JSON" }
+  ],
+  crawl_summary_user_prompt: [
+    { name: "sourceName", description: "数据源名称" },
+    { name: "sourceType", description: "数据源类型" },
+    { name: "preferredPath", description: "数据源配置的默认路径" },
+    { name: "url", description: "原网页链接" },
+    { name: "rawTitle", description: "原网页标题" },
+    { name: "rawText", description: "原网页清洗文本" }
+  ]
 };
 
 type PathForm = {
@@ -232,6 +553,100 @@ const emptyChartForm: ChartForm = {
   filtersText: "{}"
 };
 
+const chartPresets: Array<{
+  key: string;
+  label: string;
+  icon: typeof BarChart3;
+  form: Omit<ChartForm, "id">;
+}> = [
+  {
+    key: "path-trend",
+    label: "三路径趋势",
+    icon: BarChart3,
+    form: {
+      title: "三路径关注度趋势",
+      chartType: "趋势图",
+      path: "全部",
+      methodology: "按年度汇总公开资讯、平台访问和学生关注数据，统一归一化为指数。",
+      sourceName: "后台维护数据",
+      sourceUrl: "",
+      visibility: "公开",
+      displayPosition: "图表中心",
+      status: "待审核",
+      dataText: JSON.stringify({
+        xKey: "year",
+        rows: [
+          { year: "2024", 就业: 72, 考研: 68, 考公: 61 },
+          { year: "2025", 就业: 78, 考研: 70, 考公: 66 },
+          { year: "2026", 就业: 82, 考研: 73, 考公: 69 }
+        ],
+        series: [
+          { key: "就业", name: "就业" },
+          { key: "考研", name: "考研" },
+          { key: "考公", name: "考公" }
+        ],
+        insights: ["就业路径热度持续上升", "考研与考公变化更平缓"]
+      }, null, 2),
+      filtersText: JSON.stringify({ path: "全部", granularity: "年度" }, null, 2)
+    }
+  },
+  {
+    key: "job-bar",
+    label: "岗位数量柱图",
+    icon: BarChart3,
+    form: {
+      title: "近期岗位与公告数量",
+      chartType: "柱状图",
+      path: "就业",
+      methodology: "按公开招聘公告和校内就业信息手动汇总，去除重复来源。",
+      sourceName: "后台维护数据",
+      sourceUrl: "",
+      visibility: "公开",
+      displayPosition: "路径页",
+      status: "待审核",
+      dataText: JSON.stringify({
+        xKey: "label",
+        rows: [
+          { label: "国企央企", 岗位数: 42 },
+          { label: "事业单位", 岗位数: 31 },
+          { label: "校招企业", 岗位数: 56 },
+          { label: "实习岗位", 岗位数: 28 }
+        ],
+        series: [{ key: "岗位数", name: "岗位数" }],
+        insights: ["校招企业数量较高", "事业单位公告需重点核对报名截止时间"]
+      }, null, 2),
+      filtersText: JSON.stringify({ path: "就业", period: "近30天" }, null, 2)
+    }
+  },
+  {
+    key: "path-share",
+    label: "路径占比环图",
+    icon: BarChart3,
+    form: {
+      title: "学生路径选择占比",
+      chartType: "环图",
+      path: "全部",
+      methodology: "按已完成 AI 访谈学生的主路径建议统计。",
+      sourceName: "平台报告数据",
+      sourceUrl: "",
+      visibility: "公开",
+      displayPosition: "首页",
+      status: "待审核",
+      dataText: JSON.stringify({
+        nameKey: "path",
+        valueKey: "score",
+        rows: [
+          { path: "就业", score: 48 },
+          { path: "考研", score: 32 },
+          { path: "考公", score: 20 }
+        ],
+        insights: ["就业是当前主路径", "考研人群仍需关注复试与调剂节奏"]
+      }, null, 2),
+      filtersText: JSON.stringify({ sample: "已完成报告学生" }, null, 2)
+    }
+  }
+];
+
 const emptyPathForm: PathForm = {
   key: "employment",
   name: "就业",
@@ -244,6 +659,60 @@ const emptyPathForm: PathForm = {
   sortOrder: 3,
   status: "启用"
 };
+
+const pathPresets: Array<{ key: string; label: string; icon: typeof Route; form: PathForm }> = [
+  {
+    key: "employment",
+    label: "上理就业路径",
+    icon: BriefcaseBusiness,
+    form: {
+      key: "employment",
+      name: "就业",
+      intro: "适合希望尽快进入行业、积累项目与实习经验的上理工本科生，重点关注校招、实习、宣讲会、上海及长三角岗位机会。",
+      suitableText: "已经有项目、竞赛、课程设计或实习经历\n希望留在上海或长三角就业\n愿意用简历、作品集和面试反馈快速迭代方向",
+      timelineText: "5-6 月：整理项目、课程设计、竞赛和实习证据\n7-8 月：完成简历、作品集和目标企业清单\n9-11 月：跟进秋招、宣讲会和双选会\n12 月以后：对比 offer、补录和毕业去向材料",
+      pitfallsText: "只看岗位标题，不核对专业要求和投递截止时间\n简历只写课程名，没有项目结果和个人贡献\n错过校招批次后才开始准备笔试面试",
+      accent: "#b45309",
+      matchScore: 82,
+      sortOrder: 1,
+      status: "启用"
+    }
+  },
+  {
+    key: "civil-exam",
+    label: "考公考编路径",
+    icon: Landmark,
+    form: {
+      key: "civil-exam",
+      name: "考公",
+      intro: "适合重视稳定性、愿意长期准备公共科目和岗位筛选的上理工本科生，重点关注国考、省考、事业单位和基层项目。",
+      suitableText: "能接受较长备考周期和不确定性\n愿意逐条核对专业、学历、政治面貌和基层经历限制\n希望把事业单位、三支一扶等作为备选方案",
+      timelineText: "8-9 月：学习行测申论基础，整理可报专业目录\n10 月：关注国考公告、职位表和报考指南\n11-12 月：参加笔试并同步准备省考/事业单位\n次年 2-4 月：准备资格复审、面试、体检和考察",
+      pitfallsText: "只看招录人数，不看专业限制和备注条件\n把国考、省考、事业单位混成一套节奏\n笔试后才开始准备面试和资格复审材料",
+      accent: "#2563eb",
+      matchScore: 74,
+      sortOrder: 2,
+      status: "启用"
+    }
+  },
+  {
+    key: "postgraduate",
+    label: "考研升学路径",
+    icon: GraduationCap,
+    form: {
+      key: "postgraduate",
+      name: "考研",
+      intro: "适合希望通过研究生阶段转换平台、专业方向或城市机会的上理工本科生，重点关注专业目录、招生简章、复试线和调剂信息。",
+      suitableText: "目标专业和研究方向相对明确\n能持续投入公共课和专业课复习\n愿意同时准备复试材料和调剂预案",
+      timelineText: "3-6 月：确定目标专业、考试科目和参考资料\n7-8 月：完成基础复习并评估院校梯度\n9-10 月：关注研招网、招生简章和网报公告\n次年 2-4 月：查询成绩、复试线、调剂和学院细则",
+      pitfallsText: "只看学校名气，不看专业课难度和招生人数\n忽略复试比例、导师方向和调剂规则\n初试结束后才准备简历、作品和复试材料",
+      accent: "#0f766e",
+      matchScore: 78,
+      sortOrder: 3,
+      status: "启用"
+    }
+  }
+];
 
 function draftFromPost(post: CommunityPost): PostDraft {
   return {
@@ -379,6 +848,140 @@ function safeJsonRecord(text: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function chartRowsFromData(data: Record<string, unknown>): ChartDataRow[] {
+  return Array.isArray(data.rows)
+    ? data.rows.filter((row) => row && typeof row === "object" && !Array.isArray(row)).map((row) => row as ChartDataRow)
+    : [];
+}
+
+function chartLabelKeyFromData(data: Record<string, unknown>) {
+  if (typeof data.nameKey === "string" && data.nameKey.trim()) return data.nameKey;
+  if (typeof data.xKey === "string" && data.xKey.trim()) return data.xKey;
+  const firstRow = chartRowsFromData(data)[0];
+  const keys = firstRow ? Object.keys(firstRow).filter((key) => key !== "color") : [];
+  return keys.find((key) => typeof firstRow?.[key] === "string") || keys[0] || "label";
+}
+
+function chartValueKeysFromData(data: Record<string, unknown>, labelKey: string) {
+  if (Array.isArray(data.series)) {
+    const declaredKeys = data.series
+      .map((item) => item && typeof item === "object" ? String((item as Record<string, unknown>).key || "") : "")
+      .map((key) => key.trim())
+      .filter(Boolean);
+    if (declaredKeys.length > 0) return Array.from(new Set(declaredKeys));
+  }
+  if (typeof data.valueKey === "string" && data.valueKey.trim()) return [data.valueKey];
+  const firstRow = chartRowsFromData(data)[0];
+  if (!firstRow) return ["数值"];
+  const numericKeys = Object.keys(firstRow).filter((key) => key !== labelKey && key !== "color" && typeof firstRow[key] === "number");
+  if (numericKeys.length > 0) return numericKeys;
+  const fallbackKeys = Object.keys(firstRow).filter((key) => key !== labelKey && key !== "color");
+  return fallbackKeys.length > 0 ? fallbackKeys : ["数值"];
+}
+
+function chartValueLabelFromData(data: Record<string, unknown>, key: string) {
+  if (Array.isArray(data.series)) {
+    const matched = data.series.find((item) => item && typeof item === "object" && (item as Record<string, unknown>).key === key) as Record<string, unknown> | undefined;
+    if (typeof matched?.name === "string" && matched.name.trim()) return matched.name;
+  }
+  const aliases: Record<string, string> = {
+    people: "人数（万人）",
+    person: "人数",
+    score: "数值",
+    value: "数值",
+    count: "数量",
+    total: "总量"
+  };
+  return aliases[key] || key;
+}
+
+function chartInsightsTextFromData(data: Record<string, unknown>) {
+  return Array.isArray(data.insights)
+    ? data.insights.map((item) => String(item)).filter(Boolean).join("\n")
+    : "";
+}
+
+function chartRowsForEditor(data: Record<string, unknown>, labelKey: string, valueKeys: string[]) {
+  const rows = chartRowsFromData(data);
+  if (rows.length === 0) {
+    return [{ [labelKey]: "", ...Object.fromEntries(valueKeys.map((key) => [key, ""])) }];
+  }
+  return rows.map((row) => {
+    const next: ChartDataRow = { ...row };
+    if (!(labelKey in next)) next[labelKey] = "";
+    valueKeys.forEach((key) => {
+      if (!(key in next)) next[key] = "";
+    });
+    return next;
+  });
+}
+
+function normalizeChartNumber(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  const numberValue = Number(text);
+  return Number.isFinite(numberValue) ? numberValue : text;
+}
+
+function uniqueChartColumnName(existing: string[], preferred: string) {
+  const base = preferred.trim() || "数值";
+  if (!existing.includes(base)) return base;
+  let index = 2;
+  while (existing.includes(`${base}${index}`)) index += 1;
+  return `${base}${index}`;
+}
+
+function buildChartDataPayload(
+  baseData: Record<string, unknown>,
+  chartType: string,
+  labelKey: string,
+  valueKeys: string[],
+  editorRows: ChartDataRow[],
+  insightsText: string,
+  valueLabels: Record<string, string> = {}
+) {
+  const normalizedValueKeys = valueKeys.length > 0 ? valueKeys : ["数值"];
+  const rows = editorRows
+    .map((row) => {
+      const next: ChartDataRow = {
+        [labelKey]: String(row[labelKey] ?? "").trim()
+      };
+      normalizedValueKeys.forEach((key) => {
+        next[key] = normalizeChartNumber(row[key]);
+      });
+      if (typeof row.color === "string" && row.color.trim()) {
+        next.color = row.color.trim();
+      }
+      return next;
+    })
+    .filter((row) => String(row[labelKey] ?? "").trim() || normalizedValueKeys.some((key) => String(row[key] ?? "").trim()));
+  const nextData: Record<string, unknown> = {
+    ...baseData,
+    rows,
+    insights: splitLines(insightsText)
+  };
+  if (chartType.includes("环") || chartType.includes("饼")) {
+    nextData.nameKey = labelKey;
+    nextData.valueKey = normalizedValueKeys[0];
+    delete nextData.xKey;
+    delete nextData.series;
+  } else {
+    const previousSeries = Array.isArray(baseData.series) ? baseData.series : [];
+    nextData.xKey = labelKey;
+    nextData.series = normalizedValueKeys.map((key, index) => {
+      const previous = previousSeries.find((item) => item && typeof item === "object" && (item as Record<string, unknown>).key === key) as Record<string, unknown> | undefined;
+      return {
+        key,
+        name: valueLabels[key]?.trim() || (typeof previous?.name === "string" ? previous.name : chartValueLabelFromData(baseData, key)),
+        ...(typeof previous?.color === "string" ? { color: previous.color } : chartPalette[index] ? { color: chartPalette[index] } : {})
+      };
+    });
+    delete nextData.nameKey;
+    delete nextData.valueKey;
+  }
+  return nextData;
 }
 
 const navItems: Array<{ key: TabKey; label: string; icon: React.ComponentType<{ size?: number }> }> = [
@@ -3135,7 +3738,6 @@ function AdminView() {
   const [crawlTasks, setCrawlTasks] = useState<CrawlTaskItem[]>([]);
   const [charts, setCharts] = useState<ChartItem[]>([]);
   const [pathConfigs, setPathConfigs] = useState<PathConfigItem[]>([]);
-  const [tags, setTags] = useState<TagItem[]>([]);
   const [aiConfigs, setAiConfigs] = useState<AiConfigItem[]>([]);
   const [reports, setReports] = useState<AbuseReportItem[]>([]);
   const [reviewComments, setReviewComments] = useState<CommunityComment[]>([]);
@@ -3151,13 +3753,16 @@ function AdminView() {
   const [adminError, setAdminError] = useState("");
   const [adminNotice, setAdminNotice] = useState("");
   const [adminBusy, setAdminBusy] = useState("");
-  const [adminTab, setAdminTab] = useState<"overview" | "users" | "contents" | "review" | "sources" | "paths" | "charts" | "tags" | "ai">("overview");
+  const [adminTab, setAdminTab] = useState<"overview" | "users" | "contents" | "review" | "sources" | "paths" | "charts" | "ai">("overview");
   const [sourceForm, setSourceForm] = useState({ id: undefined as number | undefined, name: "", url: "", type: "公开权威数据", path: "就业", frequency: "每日", trustLevel: "中", status: "启用", fallbackUrlsText: "" });
   const [contentForm, setContentForm] = useState({ id: undefined as number | undefined, title: "首页公告", category: "公告", summary: "请完成 AI 访谈并生成报告。", body: "请完成 AI 访谈并生成报告。", sourceName: "后台维护", sourceUrl: "", tags: "公告", displayPosition: "首页", sortOrder: 1, status: "已发布" });
-  const [tagForm, setTagForm] = useState({ id: undefined as number | undefined, name: "校招", type: "内容标签", status: "启用", sortOrder: 9 });
   const [chartForm, setChartForm] = useState<ChartForm>(emptyChartForm);
   const [pathForm, setPathForm] = useState<PathForm>(emptyPathForm);
-  const [aiForm, setAiForm] = useState({ id: undefined as number | undefined, configType: "prompt", version: "PROMPT-2026.06", title: "追问提示词", content: "围绕报告正文和访谈素材回答追问，不输出录取、上岸、就业结果承诺。", status: "草稿" });
+  const [aiForm, setAiForm] = useState(() => {
+    const template = aiConfigTemplates.report_system_prompt;
+    return { id: undefined as number | undefined, configType: "report_system_prompt", version: template.version, title: template.title, content: template.content, status: "已发布" };
+  });
+  const aiContentRef = useRef<HTMLTextAreaElement | null>(null);
   const [candidateStatus, setCandidateStatus] = useState("待审核");
   const [candidateKeyword, setCandidateKeyword] = useState("");
   const [crawlTaskStatus, setCrawlTaskStatus] = useState("全部");
@@ -3171,7 +3776,7 @@ function AdminView() {
 
   async function refreshAdmin(token = admin?.token) {
     if (!token) return;
-    const [nextDashboard, nextSources, nextPosts, nextStudents, nextCommunityUsers, nextContents, nextCandidates, nextCrawlTasks, nextCharts, nextPaths, nextTags, nextAiConfigs, nextReports, nextComments] = await Promise.all([
+    const [nextDashboard, nextSources, nextPosts, nextStudents, nextCommunityUsers, nextContents, nextCandidates, nextCrawlTasks, nextCharts, nextPaths, nextAiConfigs, nextReports, nextComments] = await Promise.all([
       adminApi.dashboard(token),
       adminApi.sources(token),
       adminApi.posts(token),
@@ -3182,7 +3787,6 @@ function AdminView() {
       adminApi.crawlTasks(token),
       adminApi.charts(token),
       adminApi.paths(token),
-      adminApi.tags(token),
       adminApi.aiConfigs(token),
       adminApi.reports(token, "待处理"),
       adminApi.comments(token)
@@ -3197,7 +3801,6 @@ function AdminView() {
     setCrawlTasks(nextCrawlTasks);
     setCharts(nextCharts);
     setPathConfigs(nextPaths);
-    setTags(nextTags);
     setAiConfigs(nextAiConfigs);
     setReports(nextReports);
     setReviewComments(nextComments);
@@ -3214,7 +3817,6 @@ function AdminView() {
     setCrawlTasks([]);
     setCharts([]);
     setPathConfigs([]);
-    setTags([]);
     setAiConfigs([]);
     setReports([]);
     setReviewComments([]);
@@ -3251,8 +3853,40 @@ function AdminView() {
     return () => window.clearTimeout(timer);
   }, [adminNotice, adminNoticeTone]);
 
+  useEffect(() => {
+    if (adminTab !== "ai" || aiConfigs.length === 0) return;
+    setAiForm((current) => {
+      const template = aiConfigTemplates[current.configType];
+      if (current.id || (template && current.content !== template.content)) return current;
+      return aiFormForType(current.configType);
+    });
+  }, [adminTab, aiConfigs]);
+
+  useEffect(() => {
+    if (adminTab !== "paths" || pathConfigs.length === 0) return;
+    setPathForm((current) => {
+      if (current.intro || current.suitableText || current.timelineText || current.pitfallsText) return current;
+      const existing = pathConfigs.find((path) => path.key === current.key) || pathConfigs[0];
+      return pathFormFromItem(existing);
+    });
+  }, [adminTab, pathConfigs]);
+
+  useEffect(() => {
+    if (adminTab !== "charts" || charts.length === 0) return;
+    setChartForm((current) => {
+      if (current.id || current.title || current.dataText !== emptyChartForm.dataText) return current;
+      return chartFormFromItem(charts[0]);
+    });
+  }, [adminTab, charts]);
+
   const adminWorking = Boolean(adminBusy);
   const busyLabel = (key: string, label: string) => adminBusy === key ? "处理中" : label;
+  const chartDataDraft = safeJsonRecord(chartForm.dataText);
+  const chartLabelKey = chartLabelKeyFromData(chartDataDraft);
+  const chartValueKeys = chartValueKeysFromData(chartDataDraft, chartLabelKey);
+  const chartValueLabels = Object.fromEntries(chartValueKeys.map((key) => [key, chartValueLabelFromData(chartDataDraft, key)]));
+  const chartEditorRows = chartRowsForEditor(chartDataDraft, chartLabelKey, chartValueKeys);
+  const chartInsightsText = chartInsightsTextFromData(chartDataDraft);
 
   async function runAdminAction(key: string, task: () => Promise<string | void>) {
     setAdminError("");
@@ -3267,6 +3901,73 @@ function AdminView() {
     } finally {
       setAdminBusy("");
     }
+  }
+
+  function updateChartDataDraft(rows: ChartDataRow[], valueKeys = chartValueKeys, insightsText = chartInsightsText) {
+    setChartForm((current) => {
+      const baseData = safeJsonRecord(current.dataText);
+      const labelKey = chartLabelKeyFromData(baseData);
+      const valueLabels = Object.fromEntries(valueKeys.map((key) => [key, chartValueLabelFromData(baseData, key)]));
+      const nextData = buildChartDataPayload(baseData, current.chartType, labelKey, valueKeys, rows, insightsText, valueLabels);
+      return { ...current, dataText: JSON.stringify(nextData, null, 2) };
+    });
+  }
+
+  function updateChartCell(rowIndex: number, key: string, value: string) {
+    const nextRows = chartEditorRows.map((row, index) => (
+      index === rowIndex ? { ...row, [key]: key === chartLabelKey ? value : normalizeChartNumber(value) } : row
+    ));
+    updateChartDataDraft(nextRows);
+  }
+
+  function addChartRow() {
+    updateChartDataDraft([
+      ...chartEditorRows,
+      { [chartLabelKey]: "", ...Object.fromEntries(chartValueKeys.map((key) => [key, ""])) }
+    ]);
+  }
+
+  function removeChartRow(rowIndex: number) {
+    const nextRows = chartEditorRows.filter((_, index) => index !== rowIndex);
+    updateChartDataDraft(nextRows.length > 0 ? nextRows : [{ [chartLabelKey]: "", ...Object.fromEntries(chartValueKeys.map((key) => [key, ""])) }]);
+  }
+
+  function updateChartValueLabel(index: number, value: string) {
+    setChartForm((current) => {
+      const baseData = safeJsonRecord(current.dataText);
+      const labelKey = chartLabelKeyFromData(baseData);
+      const valueKeys = chartValueKeysFromData(baseData, labelKey);
+      const valueLabels = Object.fromEntries(valueKeys.map((key, keyIndex) => [
+        key,
+        keyIndex === index ? value : chartValueLabelFromData(baseData, key)
+      ]));
+      const nextData = buildChartDataPayload(baseData, current.chartType, labelKey, valueKeys, chartRowsFromData(baseData), chartInsightsTextFromData(baseData), valueLabels);
+      return { ...current, dataText: JSON.stringify(nextData, null, 2) };
+    });
+  }
+
+  function addChartValueColumn() {
+    const nextKey = uniqueChartColumnName(chartValueKeys, `数据${chartValueKeys.length + 1}`);
+    updateChartDataDraft(
+      chartEditorRows.map((row) => ({ ...row, [nextKey]: "" })),
+      [...chartValueKeys, nextKey]
+    );
+  }
+
+  function removeChartValueColumn(index: number) {
+    if (chartValueKeys.length <= 1) return;
+    const removedKey = chartValueKeys[index];
+    const nextValueKeys = chartValueKeys.filter((_, keyIndex) => keyIndex !== index);
+    const nextRows = chartEditorRows.map((row) => {
+      const next = { ...row };
+      delete next[removedKey];
+      return next;
+    });
+    updateChartDataDraft(nextRows, nextValueKeys);
+  }
+
+  function updateChartInsights(value: string) {
+    updateChartDataDraft(chartEditorRows, chartValueKeys, value);
   }
 
   async function adminLogin() {
@@ -3300,6 +4001,41 @@ function AdminView() {
       await adminApi.updatePostStatus(admin.token, id, status, status === "已驳回" ? "内容不符合公开展示要求" : "后台审核", expectedStatus);
       return `社区内容已更新为：${status}`;
     });
+  }
+
+  function renderPostReviewActions(post: CommunityPost) {
+    const restoreButton = (
+      <button className="secondary-button" onClick={() => updateStatus(post.id, "已通过", post.status)} disabled={adminWorking}>
+        {busyLabel(`post-${post.id}-已通过`, "恢复通过")}
+      </button>
+    );
+    if (post.status === "待审核") {
+      return (
+        <>
+          <button className="secondary-button" onClick={() => updateStatus(post.id, "已通过", post.status)} disabled={adminWorking}>{busyLabel(`post-${post.id}-已通过`, "通过")}</button>
+          <button className="secondary-button danger-button" onClick={() => updateStatus(post.id, "已驳回", post.status)} disabled={adminWorking}>{busyLabel(`post-${post.id}-已驳回`, "驳回")}</button>
+        </>
+      );
+    }
+    if (post.status === "已通过") {
+      return (
+        <>
+          <button className="secondary-button danger-button" onClick={() => updateStatus(post.id, "已下架", post.status)} disabled={adminWorking}>{busyLabel(`post-${post.id}-已下架`, "下架")}</button>
+          <button className="secondary-button" onClick={() => updateStatus(post.id, post.featured ? "取消精选" : "精选", post.status)} disabled={adminWorking}>
+            {busyLabel(`post-${post.id}-${post.featured ? "取消精选" : "精选"}`, post.featured ? "取消精选" : "精选")}
+          </button>
+        </>
+      );
+    }
+    if (post.status === "已驳回" || post.status === "已下架") {
+      return restoreButton;
+    }
+    return (
+      <>
+        {restoreButton}
+        <button className="secondary-button danger-button" onClick={() => updateStatus(post.id, "已下架", post.status)} disabled={adminWorking}>{busyLabel(`post-${post.id}-已下架`, "下架")}</button>
+      </>
+    );
   }
 
   async function triggerCrawl(id: number) {
@@ -3429,6 +4165,29 @@ function AdminView() {
     });
   }
 
+  function renderCommentReviewActions(comment: CommunityComment) {
+    const approveLabel = comment.status === "已下架" ? "恢复通过" : "通过";
+    const approveButton = (
+      <button className="secondary-button" onClick={() => updateComment(comment.id, "已通过", comment.status)} disabled={adminWorking}>
+        {busyLabel(`comment-${comment.id}-已通过`, approveLabel)}
+      </button>
+    );
+    const takeDownButton = (
+      <button className="secondary-button danger-button" onClick={() => updateComment(comment.id, "已下架", comment.status)} disabled={adminWorking}>
+        {busyLabel(`comment-${comment.id}-已下架`, "下架")}
+      </button>
+    );
+
+    if (comment.status === "已通过") return takeDownButton;
+    if (comment.status === "已下架") return approveButton;
+    return (
+      <>
+        {approveButton}
+        {takeDownButton}
+      </>
+    );
+  }
+
   function applyImportedChartData(result: { importedRows: number; data: Record<string, unknown>; errors: Array<{ row: number; reason: string }> }) {
     if (result.errors.length > 0) {
       setAdminError(result.errors.slice(0, 5).map((error) => `第 ${error.row} 行：${error.reason}`).join("；"));
@@ -3438,7 +4197,7 @@ function AdminView() {
       ...current,
       dataText: JSON.stringify(result.data, null, 2)
     }));
-    setAdminNotice(`后端已解析并校验 ${result.importedRows} 行数据，请补齐图表标题后保存`);
+    setAdminNotice(`已解析 ${result.importedRows} 行数据，下面的数据表会同步展示，确认标题后保存即可`);
   }
 
   function chartFormCanAutoSaveImport(form: ChartForm) {
@@ -3465,7 +4224,7 @@ function AdminView() {
         dataText
       }));
       await runAdminAction("import-chart", async () => {
-        const filters = parseJsonRecord(chartForm.filtersText, "筛选条件");
+        const filters = safeJsonRecord(chartForm.filtersText);
         const saved = await adminApi.saveChart(admin.token, {
           id: chartForm.id,
           title: chartForm.title,
@@ -3474,9 +4233,9 @@ function AdminView() {
           methodology: chartForm.methodology || `由 ${file.name} 导入，后端已校验 ${result.importedRows} 行数据`,
           sourceName: chartForm.sourceName || "后台导入数据",
           sourceUrl: chartForm.sourceUrl,
-          visibility: chartForm.visibility,
+          visibility: chartForm.visibility || "公开",
           displayPosition: chartForm.displayPosition,
-          status: chartForm.status,
+          status: "已发布",
           data: result.data,
           filters
         });
@@ -3490,23 +4249,37 @@ function AdminView() {
     }
   }
 
-  async function saveTag() {
-    if (!admin) return;
-    await runAdminAction("save-tag", async () => {
-      await adminApi.saveTag(admin.token, tagForm);
-      return tagForm.id ? "标签已更新" : "标签已保存";
-    });
+  function applyChartPreset(preset: (typeof chartPresets)[number]) {
+    const existing = charts.find((chart) => chart.title === preset.form.title);
+    setChartForm(existing ? chartFormFromItem(existing) : { ...preset.form, status: "已发布" });
+    setAdminNotice(existing ? `已选择图表：${existing.title}` : `已套用图表模板：${preset.label}`);
+  }
+
+  function applyPathPreset(preset: (typeof pathPresets)[number]) {
+    const existing = pathConfigs.find((path) => path.key === preset.form.key);
+    setPathForm(existing ? pathFormFromItem(existing) : { ...preset.form, status: "启用" });
+    setAdminNotice(existing ? `已选择路径：${existing.name}` : `已套用路径文案模板：${preset.label}`);
   }
 
   async function saveChart() {
     if (!admin) return;
     await runAdminAction("save-chart", async () => {
-      const data = parseJsonRecord(chartForm.dataText, "图表数据");
-      const rows = data.rows;
-      if (!Array.isArray(rows) || rows.length === 0) {
-        throw new Error("图表数据至少需要在 rows 中填写一行真实数据");
+      const rawData = parseJsonRecord(chartForm.dataText, "图表数据");
+      const labelKey = chartLabelKeyFromData(rawData);
+      const valueKeys = chartValueKeysFromData(rawData, labelKey);
+      const data = buildChartDataPayload(rawData, chartForm.chartType, labelKey, valueKeys, chartRowsFromData(rawData), chartInsightsTextFromData(rawData));
+      const rows = chartRowsFromData(data);
+      if (rows.length === 0) {
+        throw new Error("图表数据至少需要填写一行真实数据");
       }
-      const filters = parseJsonRecord(chartForm.filtersText, "筛选条件");
+      const hasInvalidNumber = rows.some((row) => valueKeys.some((key) => {
+        const value = row[key];
+        return value !== "" && !Number.isFinite(Number(value));
+      }));
+      if (hasInvalidNumber) {
+        throw new Error("图表数据的数值列只能填写数字");
+      }
+      const filters = safeJsonRecord(chartForm.filtersText);
       await adminApi.saveChart(admin.token, {
         id: chartForm.id,
         title: chartForm.title,
@@ -3515,9 +4288,9 @@ function AdminView() {
         methodology: chartForm.methodology,
         sourceName: chartForm.sourceName,
         sourceUrl: chartForm.sourceUrl,
-        visibility: chartForm.visibility,
-        displayPosition: chartForm.displayPosition,
-        status: chartForm.status,
+        visibility: "公开",
+        displayPosition: chartForm.displayPosition || "图表中心",
+        status: "已发布",
         data,
         filters
       });
@@ -3545,8 +4318,8 @@ function AdminView() {
         pitfalls: splitLines(pathForm.pitfallsText),
         accent: pathForm.accent,
         matchScore: pathForm.matchScore,
-        sortOrder: pathForm.sortOrder,
-        status: pathForm.status
+        sortOrder: pathForm.sortOrder || pathPresets.find((preset) => preset.form.key === pathForm.key)?.form.sortOrder || 1,
+        status: "启用"
       });
       return "路径配置已保存，前台三路径页面会动态读取";
     });
@@ -3555,28 +4328,64 @@ function AdminView() {
   async function saveAiConfig() {
     if (!admin) return;
     await runAdminAction("save-ai", async () => {
-      await adminApi.saveAiConfig(admin.token, aiForm);
-      return aiForm.id ? "AI 配置已更新" : "AI 配置已保存";
+      const template = aiConfigTemplates[aiForm.configType];
+      const saved = await adminApi.saveAiConfig(admin.token, {
+        ...aiForm,
+        version: aiForm.version || template?.version || "ADMIN-2026.06",
+        title: aiForm.title || template?.title || currentAiGuide.label,
+        status: "已发布"
+      });
+      const savedId = Number(saved.id);
+      if (Number.isFinite(savedId)) {
+        setAiForm((current) => ({ ...current, id: savedId, status: "已发布" }));
+      }
+      return "AI 配置已保存并发布";
     });
   }
 
-  function updateAiConfigType(configType: string) {
+  function aiFormForType(configType: string) {
+    const existing = aiConfigs.find((config) => config.configType === configType && config.status === "已发布")
+      || aiConfigs.find((config) => config.configType === configType);
     const template = aiConfigTemplates[configType];
-    setAiForm((current) => ({
-      ...current,
+    if (existing) {
+      return {
+        id: existing.id,
+        configType: existing.configType,
+        version: existing.version,
+        title: existing.title,
+        content: existing.content,
+        status: "已发布"
+      };
+    }
+    return {
+      id: undefined,
       configType,
-      version: template && !current.id ? template.version : current.version,
-      title: template && !current.id ? template.title : current.title,
-      content: template && !current.id ? template.content : current.content
-    }));
+      version: template?.version || "ADMIN-2026.06",
+      title: template?.title || aiConfigGuides[configType]?.label || configType,
+      content: template?.content || "",
+      status: "已发布"
+    };
   }
 
-  function newTag() {
-    setTagForm({ id: undefined, name: "", type: "内容标签", status: "启用", sortOrder: 0 });
+  function updateAiConfigType(configType: string) {
+    setAiForm(aiFormForType(configType));
   }
 
-  function newAiConfig() {
-    setAiForm({ id: undefined, configType: "prompt", version: "", title: "", content: "", status: "草稿" });
+  function insertAiVariable(variableName: string) {
+    const token = `{${variableName}}`;
+    const textarea = aiContentRef.current;
+    if (!textarea) {
+      setAiForm((current) => ({ ...current, content: `${current.content}\n${token}` }));
+      return;
+    }
+    const start = textarea.selectionStart ?? aiForm.content.length;
+    const end = textarea.selectionEnd ?? start;
+    const nextContent = `${aiForm.content.slice(0, start)}${token}${aiForm.content.slice(end)}`;
+    setAiForm((current) => ({ ...current, content: nextContent }));
+    window.setTimeout(() => {
+      textarea.focus();
+      textarea.setSelectionRange(start + token.length, start + token.length);
+    }, 0);
   }
 
   function updateAiJsonPayload(nextPayload: Record<string, unknown>) {
@@ -3669,7 +4478,11 @@ function AdminView() {
     return !keyword || [user.name, user.studentNo || "", user.status, user.punishmentReason || ""]
       .some((value) => value.toLowerCase().includes(keyword));
   });
-  const visibleReviewPosts = posts.filter((post) => postReviewStatus === "全部" || post.status === postReviewStatus);
+  const visibleReviewPosts = posts.filter((post) => {
+    if (postReviewStatus === "全部") return true;
+    if (postReviewStatus === "精选") return Boolean(post.featured);
+    return post.status === postReviewStatus;
+  });
   const aiJsonPayload = safeJsonRecord(aiForm.content);
   const aiWeightsPayload = aiJsonPayload.weights && typeof aiJsonPayload.weights === "object" && !Array.isArray(aiJsonPayload.weights)
     ? aiJsonPayload.weights as Record<string, unknown>
@@ -3684,6 +4497,11 @@ function AdminView() {
   const modelTemperature = Number(aiJsonPayload.temperature ?? 0.7);
   const modelTopP = Number(aiJsonPayload.topP ?? aiJsonPayload.top_p ?? 0.9);
   const modelMaxTokens = Number(aiJsonPayload.maxTokens ?? aiJsonPayload.max_tokens ?? 4000);
+  const currentAiGuide = aiConfigGuides[aiForm.configType] || aiConfigGuides.prompt;
+  const currentAiVariables = aiConfigVariables[aiForm.configType] || [];
+  const isEditablePromptTemplate = aiForm.configType.endsWith("_system_prompt")
+    || aiForm.configType.endsWith("_user_prompt")
+    || aiForm.configType === "answer_fallback_template";
 
   if (!admin) {
     return (
@@ -3761,7 +4579,6 @@ function AdminView() {
           ["sources", "数据源"],
           ["paths", "路径"],
           ["charts", "图表"],
-          ["tags", "标签"],
           ["ai", "AI 配置"]
         ].map(([key, label]) => (
           <button key={key} className={adminTab === key ? "active" : ""} onClick={() => setAdminTab(key as typeof adminTab)}>{label}</button>
@@ -3915,7 +4732,11 @@ function AdminView() {
               <label><span>摘要</span><input value={contentForm.summary} onChange={(event) => setContentForm({ ...contentForm, summary: event.target.value })} /></label>
               <label><span>来源</span><input value={contentForm.sourceName} onChange={(event) => setContentForm({ ...contentForm, sourceName: event.target.value })} /></label>
               <label><span>来源链接</span><input value={contentForm.sourceUrl} onChange={(event) => setContentForm({ ...contentForm, sourceUrl: event.target.value })} /></label>
-              <label><span>标签</span><input value={contentForm.tags} onChange={(event) => setContentForm({ ...contentForm, tags: event.target.value })} /></label>
+              <label className="full-span">
+                <span>关键词</span>
+                <input value={contentForm.tags} onChange={(event) => setContentForm({ ...contentForm, tags: event.target.value })} />
+                <small>用于后台搜索和资讯分类，可用逗号分隔，例如：校招，岗位表，报名时间</small>
+              </label>
               <label>
                 <span>展示位</span>
                 <select value={contentForm.displayPosition} onChange={(event) => setContentForm({ ...contentForm, displayPosition: event.target.value })}>
@@ -3996,13 +4817,10 @@ function AdminView() {
                 <div className="queue-item" key={post.id}>
                   <div>
                     <strong>{post.title}</strong>
-                    <span>{post.type} · {post.path} · {post.status} · 发布 {formatAdminTime(post.createdAt)}</span>
+                    <span>{post.type} · {post.path} · {post.status}{post.featured ? " · 精选" : ""} · 发布 {formatAdminTime(post.createdAt)}</span>
                   </div>
                   <div className="button-row compact-actions">
-                    <button className="secondary-button" onClick={() => updateStatus(post.id, "已通过", post.status)} disabled={adminWorking}>{busyLabel(`post-${post.id}-已通过`, "通过")}</button>
-                    <button className="secondary-button" onClick={() => updateStatus(post.id, "已驳回", post.status)} disabled={adminWorking}>{busyLabel(`post-${post.id}-已驳回`, "驳回")}</button>
-                    <button className="secondary-button" onClick={() => updateStatus(post.id, "已下架", post.status)} disabled={adminWorking}>{busyLabel(`post-${post.id}-已下架`, "下架")}</button>
-                    <button className="secondary-button" onClick={() => updateStatus(post.id, "精选", post.status)} disabled={adminWorking}>{busyLabel(`post-${post.id}-精选`, "精选")}</button>
+                    {renderPostReviewActions(post)}
                   </div>
                 </div>
               ))}
@@ -4059,8 +4877,7 @@ function AdminView() {
                     <small>{comment.status} · {formatAdminTime(comment.createdAt)}</small>
                   </div>
                   <div className="button-row compact-actions">
-                    <button className="secondary-button" onClick={() => updateComment(comment.id, "已通过", comment.status)} disabled={adminWorking}>通过</button>
-                    <button className="secondary-button danger-button" onClick={() => updateComment(comment.id, "已下架", comment.status)} disabled={adminWorking}>下架</button>
+                    {renderCommentReviewActions(comment)}
                   </div>
                 </div>
               ))}
@@ -4200,7 +5017,7 @@ function AdminView() {
                   </button>
                 ))}
               </div>
-              <input value={candidateKeyword} placeholder="搜索标题、来源、路径或标签" onChange={(event) => setCandidateKeyword(event.target.value)} />
+              <input value={candidateKeyword} placeholder="搜索标题、来源、路径或关键词" onChange={(event) => setCandidateKeyword(event.target.value)} />
             </div>
             <div className="queue-list">
               {visibleCandidates.map((candidate) => (
@@ -4229,49 +5046,42 @@ function AdminView() {
       )}
 
       {adminTab === "paths" && (
-        <section className="content-grid two">
-          <div className="surface">
-            <SectionTitle icon={Route} title="三路径页面配置" />
+        <section className="content-grid ai-config-layout">
+          <div className="surface ai-config-surface">
+            <div className="config-helper-panel simplified-ai-helper">
+              <div>
+                <strong>这里改的是学生前台路径页</strong>
+                <span>简介、适合人群、准备时间线和常见误区会直接影响前台“就业/考公/考研”路径卡片，不是后台内部参数。</span>
+              </div>
+              <div className="preset-grid path-preset-grid">
+                {pathPresets.map((preset) => {
+                  const PresetIcon = preset.icon;
+                  return (
+                    <button type="button" className={pathForm.key === preset.form.key ? "preset-button active" : "preset-button"} key={preset.key} onClick={() => applyPathPreset(preset)}>
+                      <PresetIcon size={16} />
+                      <span>{preset.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <div className="form-grid compact-form">
               <label>
-                <span>路径标识</span>
-                <select value={pathForm.key} onChange={(event) => setPathForm({ ...pathForm, key: event.target.value })}>
-                  <option value="employment">employment · 就业</option>
-                  <option value="civil-exam">civil-exam · 考公</option>
-                  <option value="postgraduate">postgraduate · 考研</option>
-                </select>
-              </label>
-              <label>
-                <span>路径名称</span>
+                <span>页面标题</span>
                 <input value={pathForm.name} onChange={(event) => setPathForm({ ...pathForm, name: event.target.value })} />
               </label>
               <label>
-                <span>色值</span>
-                <input value={pathForm.accent} onChange={(event) => setPathForm({ ...pathForm, accent: event.target.value })} />
-              </label>
-              <label>
-                <span>默认匹配度</span>
+                <span>默认展示分</span>
                 <input type="number" min={0} max={100} value={pathForm.matchScore} onChange={(event) => setPathForm({ ...pathForm, matchScore: Number(event.target.value) })} />
-              </label>
-              <label>
-                <span>排序</span>
-                <input type="number" value={pathForm.sortOrder} onChange={(event) => setPathForm({ ...pathForm, sortOrder: Number(event.target.value) })} />
-              </label>
-              <label>
-                <span>状态</span>
-                <select value={pathForm.status} onChange={(event) => setPathForm({ ...pathForm, status: event.target.value })}>
-                  <option value="启用">启用</option>
-                  <option value="停用">停用</option>
-                </select>
               </label>
             </div>
             <label>
-              <span>路径简介</span>
+              <span>前台简介</span>
               <textarea value={pathForm.intro} onChange={(event) => setPathForm({ ...pathForm, intro: event.target.value })} />
             </label>
             <div className="form-grid compact-form">
               <label>
-                <span>适合人群（一行一项）</span>
+                <span>适合哪些上理本科生（一行一项）</span>
                 <textarea value={pathForm.suitableText} onChange={(event) => setPathForm({ ...pathForm, suitableText: event.target.value })} />
               </label>
               <label>
@@ -4279,41 +5089,51 @@ function AdminView() {
                 <textarea value={pathForm.timelineText} onChange={(event) => setPathForm({ ...pathForm, timelineText: event.target.value })} />
               </label>
               <label>
-                <span>常见误区（一行一项）</span>
+                <span>学生常见误区（一行一项）</span>
                 <textarea value={pathForm.pitfallsText} onChange={(event) => setPathForm({ ...pathForm, pitfallsText: event.target.value })} />
               </label>
             </div>
-            <div className="button-row">
-              <button className="primary-button" onClick={savePath} disabled={adminWorking}>{busyLabel("save-path", "保存路径配置")}</button>
-              <button className="secondary-button" onClick={() => setPathForm(emptyPathForm)} disabled={adminWorking}>清空</button>
+            <div className="path-live-preview" style={{ borderColor: pathForm.accent }}>
+              <small className="preview-label">前台预览</small>
+              <div>
+                <strong>{pathForm.name || "路径标题"}</strong>
+                <span>前台默认展示分 {pathForm.matchScore}%</span>
+              </div>
+              <p>{pathForm.intro || "这里会显示在学生前台路径页的路径简介。"}</p>
+              <small>{splitLines(pathForm.timelineText)[0] || "第一条时间线会显示在前台时间线区域"}</small>
             </div>
-          </div>
-          <div className="surface">
-            <SectionTitle icon={Route} title="前台路径配置列表" />
-            <div className="queue-list">
-              {pathConfigs.map((path) => (
-                <div className="queue-item" key={path.key}>
-                  <div>
-                    <strong>{path.name}</strong>
-                    <span>{path.key} · 匹配度 {path.matchScore} · 排序 {path.sortOrder} · 更新 {formatAdminTime(path.updatedAt)}</span>
-                    <p>{path.intro}</p>
-                  </div>
-                  <div className="button-row compact-actions">
-                    <StatusPill status={path.status} />
-                    <button className="secondary-button" onClick={() => setPathForm(pathFormFromItem(path))}>编辑</button>
-                  </div>
-                </div>
-              ))}
-              {pathConfigs.length === 0 && <div className="empty-state">暂无路径配置</div>}
+            <div className="button-row">
+              <button className="primary-button" onClick={savePath} disabled={adminWorking}>{busyLabel("save-path", "保存前台文案")}</button>
             </div>
           </div>
         </section>
       )}
 
       {adminTab === "charts" && (
-        <section className="content-grid two">
-          <div className="surface">
-            <SectionTitle icon={BarChart3} title={chartForm.id ? "编辑图表" : "新增图表"} />
+        <section className="content-grid ai-config-layout">
+          <div className="surface ai-config-surface">
+            <div className="config-helper-panel simplified-ai-helper">
+              <div>
+                <strong>{chartForm.title || "图表配置"}</strong>
+                <span>点击图表后修改标题、统计口径和数据；保存后默认公开发布到前台图表区域。</span>
+              </div>
+              <div className="preset-grid">
+                {charts.length > 0 ? charts.map((chart) => (
+                  <button type="button" className={chartForm.id === chart.id ? "preset-button active" : "preset-button"} key={chart.id} onClick={() => setChartForm(chartFormFromItem(chart))}>
+                    <BarChart3 size={16} />
+                    <span>{chart.title}</span>
+                  </button>
+                )) : chartPresets.map((preset) => {
+                    const PresetIcon = preset.icon;
+                    return (
+                      <button type="button" className="preset-button" key={preset.key} onClick={() => applyChartPreset(preset)}>
+                        <PresetIcon size={16} />
+                        <span>{preset.label}</span>
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
             <div className="form-grid compact-form">
               <label><span>图表标题</span><input value={chartForm.title} onChange={(event) => setChartForm({ ...chartForm, title: event.target.value })} /></label>
               <label>
@@ -4336,137 +5156,125 @@ function AdminView() {
               <label><span>来源</span><input value={chartForm.sourceName} onChange={(event) => setChartForm({ ...chartForm, sourceName: event.target.value })} /></label>
               <label><span>来源链接</span><input value={chartForm.sourceUrl} onChange={(event) => setChartForm({ ...chartForm, sourceUrl: event.target.value })} /></label>
               <label>
-                <span>展示位</span>
+                <span>显示位置</span>
                 <select value={chartForm.displayPosition} onChange={(event) => setChartForm({ ...chartForm, displayPosition: event.target.value })}>
                   <option value="首页">首页</option>
                   <option value="图表中心">图表中心</option>
                   <option value="路径页">路径页</option>
                 </select>
               </label>
-              <label>
-                <span>可见性</span>
-                <select value={chartForm.visibility} onChange={(event) => setChartForm({ ...chartForm, visibility: event.target.value })}>
-                  <option value="公开">公开</option>
-                  <option value="后台可见">后台可见</option>
-                </select>
-              </label>
-              <label>
-                <span>状态</span>
-                <select value={chartForm.status} onChange={(event) => setChartForm({ ...chartForm, status: event.target.value })}>
-                  <option value="待审核">待审核</option>
-                  <option value="已发布">已发布</option>
-                  <option value="已下架">已下架</option>
-                </select>
-              </label>
               <label><span>统计口径</span><textarea value={chartForm.methodology} onChange={(event) => setChartForm({ ...chartForm, methodology: event.target.value })} /></label>
-              <label><span>筛选条件 JSON</span><textarea value={chartForm.filtersText} onChange={(event) => setChartForm({ ...chartForm, filtersText: event.target.value })} /></label>
             </div>
-            <label>
-              <span>图表数据 JSON，需要包含 rows 数组</span>
-              <textarea className="code-textarea" value={chartForm.dataText} onChange={(event) => setChartForm({ ...chartForm, dataText: event.target.value })} />
-            </label>
-            <label className="file-import-line">
-              <span>导入 Excel/CSV</span>
-              <input type="file" accept=".xlsx,.csv,text/csv" onChange={(event) => {
-                importChartFile(event.target.files?.[0] || null);
-                event.target.value = "";
-              }} />
-            </label>
-            <div className="helper-text">先填写图表标题、类型和路径后导入，系统会在后端校验通过后直接保存并刷新缓存；图表数据可声明 xKey、series、insights。</div>
+            <div className="chart-table-editor">
+              <div className="chart-table-head">
+                <div>
+                  <strong>图表数据表</strong>
+                  <span>第一列写名称，后面的列填写数字；导入 Excel/CSV 后也会显示在这里。</span>
+                </div>
+                <button type="button" className="secondary-button" onClick={addChartRow}>
+                  <Plus size={16} />
+                  新增一行
+                </button>
+              </div>
+              <div className="chart-series-editor">
+                <strong>数据列</strong>
+                {chartValueKeys.map((key, index) => (
+                  <div className="chart-series-field" key={`${key}-${index}`}>
+                    <input value={chartValueLabels[key] || key} onChange={(event) => updateChartValueLabel(index, event.target.value)} aria-label={`第 ${index + 1} 个数据列名称`} />
+                    {chartValueKeys.length > 1 && (
+                      <button type="button" className="icon-button danger-icon" onClick={() => removeChartValueColumn(index)} aria-label={`删除 ${chartValueLabels[key] || key} 数据列`}>
+                        <Trash2 size={15} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <button type="button" className="secondary-button" onClick={addChartValueColumn}>
+                  <Plus size={16} />
+                  新增一列
+                </button>
+              </div>
+              <div className="chart-data-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>名称</th>
+                      {chartValueKeys.map((key) => <th key={key}>{chartValueLabels[key] || key}</th>)}
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {chartEditorRows.map((row, rowIndex) => (
+                      <tr key={`chart-row-${rowIndex}`}>
+                        <td>
+                          <input
+                            value={String(row[chartLabelKey] ?? "")}
+                            onChange={(event) => updateChartCell(rowIndex, chartLabelKey, event.target.value)}
+                            placeholder="例如 2026 / 就业 / 国企央企"
+                          />
+                        </td>
+                        {chartValueKeys.map((key) => (
+                          <td key={key}>
+                            <input
+                              inputMode="decimal"
+                              value={String(row[key] ?? "")}
+                              onChange={(event) => updateChartCell(rowIndex, key, event.target.value)}
+                              placeholder="0"
+                            />
+                          </td>
+                        ))}
+                        <td className="chart-row-actions">
+                          <button type="button" className="icon-button danger-icon" onClick={() => removeChartRow(rowIndex)} aria-label="删除这一行">
+                            <Trash2 size={15} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <label className="chart-insights-field">
+                <span>图表解读</span>
+                <textarea value={chartInsightsText} onChange={(event) => updateChartInsights(event.target.value)} placeholder="每行写一条给学生看的解释，例如：就业路径热度持续上升" />
+              </label>
+            </div>
+            <div className="file-import-line chart-import-line">
+              <span>批量导入图表数据</span>
+              <label className="secondary-button file-upload-button">
+                选择 Excel/CSV 文件
+                <input type="file" accept=".xlsx,.csv,text/csv" onChange={(event) => {
+                  importChartFile(event.target.files?.[0] || null);
+                  event.target.value = "";
+                }} />
+              </label>
+            </div>
+            <div className="helper-text">Excel/CSV 第一行会作为列名，第一列通常写年份、路径或类别，后面的列填写数字；已经填好标题、类型和路径时，导入后会自动保存。</div>
             <div className="button-row">
               <button className="primary-button" onClick={saveChart} disabled={adminWorking}>{busyLabel("save-chart", "保存图表")}</button>
               <button className="secondary-button" onClick={refreshOfficialCharts} disabled={adminWorking}>
                 <RefreshCcw size={16} />
                 {busyLabel("refresh-charts", "刷新官方数据")}
               </button>
-              <button className="secondary-button" onClick={() => setChartForm(emptyChartForm)} disabled={adminWorking}>新建</button>
-            </div>
-          </div>
-          <div className="surface">
-            <SectionTitle icon={BarChart3} title="图表列表" />
-            <div className="queue-list">
-              {charts.map((chart) => (
-                <div className="queue-item" key={chart.id}>
-                  <div>
-                    <strong>{chart.title}</strong>
-                    <span>{chart.chartType} · {chart.path} · {chart.sourceName} · {chart.displayPosition || "未设置展示位"} · 更新 {formatAdminTime(chart.updatedAt)}</span>
-                    <small>数据 {Array.isArray(chart.data?.rows) ? chart.data.rows.length : 0} 行 · 可见性 {chart.visibility}</small>
-                  </div>
-                  <div className="button-row compact-actions">
-                    <StatusPill status={chart.status} />
-                    <button className="secondary-button" onClick={() => setChartForm(chartFormFromItem(chart))}>编辑</button>
-                  </div>
-                </div>
-              ))}
-              {charts.length === 0 && <div className="empty-state">暂无图表配置</div>}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {adminTab === "tags" && (
-        <section className="content-grid two">
-          <div className="surface">
-            <SectionTitle icon={SlidersHorizontal} title={tagForm.id ? "编辑标签" : "新增标签"} action="新建" onAction={newTag} />
-            <div className="form-grid compact-form">
-              <label><span>标签名</span><input value={tagForm.name} onChange={(event) => setTagForm({ ...tagForm, name: event.target.value })} /></label>
-              <label>
-                <span>类型</span>
-                <select value={tagForm.type} onChange={(event) => setTagForm({ ...tagForm, type: event.target.value })}>
-                  {["内容标签", "路径标签", "学院标签", "专业标签"].map((item) => <option key={item} value={item}>{item}</option>)}
-                </select>
-              </label>
-              <label>
-                <span>状态</span>
-                <select value={tagForm.status} onChange={(event) => setTagForm({ ...tagForm, status: event.target.value })}>
-                  {["启用", "停用"].map((item) => <option key={item} value={item}>{item}</option>)}
-                </select>
-              </label>
-              <label><span>排序</span><input type="number" value={tagForm.sortOrder} onChange={(event) => setTagForm({ ...tagForm, sortOrder: Number(event.target.value) })} /></label>
-            </div>
-            <div className="button-row">
-              <button className="primary-button" onClick={saveTag} disabled={adminWorking}>{busyLabel("save-tag", "保存标签")}</button>
-            </div>
-          </div>
-          <div className="surface">
-            <SectionTitle icon={SlidersHorizontal} title="统一标签" />
-            <div className="queue-list">
-              {tags.map((tag) => (
-                <div className="queue-item" key={tag.id}>
-                  <div>
-                    <strong>{tag.name}</strong>
-                    <span>{tag.type} · 排序 {tag.sortOrder} · 创建 {formatAdminTime(tag.createdAt)}</span>
-                  </div>
-                  <div className="button-row compact-actions">
-                    <StatusPill status={tag.status} />
-                    <button className="secondary-button" onClick={() => setTagForm({ id: tag.id, name: tag.name, type: tag.type, status: tag.status, sortOrder: tag.sortOrder })}>编辑</button>
-                  </div>
-                </div>
-              ))}
             </div>
           </div>
         </section>
       )}
 
       {adminTab === "ai" && (
-        <section className="content-grid two">
-          <div className="surface">
-            <SectionTitle icon={Bot} title={aiForm.id ? "编辑 AI 配置" : "新增 AI 配置"} action="新建" onAction={newAiConfig} />
-            <div className="form-grid compact-form">
-              <label>
-                <span>类型</span>
-                <select value={aiForm.configType} onChange={(event) => updateAiConfigType(event.target.value)}>
-                  {aiConfigTypes.map((item) => <option key={item} value={item}>{item}</option>)}
-                </select>
-              </label>
-              <label><span>版本</span><input value={aiForm.version} onChange={(event) => setAiForm({ ...aiForm, version: event.target.value })} /></label>
-              <label><span>标题</span><input value={aiForm.title} onChange={(event) => setAiForm({ ...aiForm, title: event.target.value })} /></label>
-              <label>
-                <span>状态</span>
-                <select value={aiForm.status} onChange={(event) => setAiForm({ ...aiForm, status: event.target.value })}>
-                  {["草稿", "已发布", "已停用"].map((item) => <option key={item} value={item}>{item}</option>)}
-                </select>
-              </label>
+        <section className="content-grid ai-config-layout">
+          <div className="surface ai-config-surface">
+            <div className="config-helper-panel ai-helper-panel simplified-ai-helper">
+              <div>
+                <strong>{currentAiGuide.label}</strong>
+                <span>{currentAiGuide.target}；{currentAiGuide.publish}</span>
+              </div>
+              <div className="preset-grid ai-preset-grid">
+                {aiConfigTypes.map((type) => (
+                  <button type="button" className={aiForm.configType === type ? "preset-button active" : "preset-button"} key={type} onClick={() => updateAiConfigType(type)}>
+                    <Bot size={15} />
+                    <span>{aiConfigGuides[type]?.label || type}</span>
+                  </button>
+                ))}
+              </div>
             </div>
             {aiForm.configType === "algorithm_weights" && (
               <div className="ai-config-controls">
@@ -4515,25 +5323,27 @@ function AdminView() {
                 </label>
               </div>
             )}
-            <textarea value={aiForm.content} onChange={(event) => setAiForm({ ...aiForm, content: event.target.value })} />
-            <button className="primary-button" onClick={saveAiConfig} disabled={adminWorking}>{busyLabel("save-ai", "保存配置")}</button>
-          </div>
-          <div className="surface">
-            <SectionTitle icon={Bot} title="版本列表" />
-            <div className="queue-list">
-              {aiConfigs.map((config) => (
-                <div className="queue-item" key={config.id}>
-                  <div>
-                    <strong>{config.title}</strong>
-                    <span>{config.configType} · {config.version} · 创建 {formatAdminTime(config.createdAt)}{config.publishedAt ? ` · 发布 ${formatAdminTime(config.publishedAt)}` : ""}</span>
-                  </div>
-                  <div className="button-row compact-actions">
-                    <StatusPill status={config.status} />
-                    <button className="secondary-button" onClick={() => setAiForm({ id: config.id, configType: config.configType, version: config.version, title: config.title, content: config.content, status: config.status })}>编辑</button>
-                  </div>
+            {currentAiVariables.length > 0 && (
+              <div className="ai-variable-panel">
+                <div>
+                  <strong>可用动态变量</strong>
+                  <span>变量由后端在调用 AI 时自动替换，管理员只需要把变量保留在模板里。</span>
                 </div>
-              ))}
-            </div>
+                <div className="ai-variable-grid">
+                  {currentAiVariables.map((variable) => (
+                    <button type="button" key={variable.name} onClick={() => insertAiVariable(variable.name)} title={variable.description}>
+                      <code>{`{${variable.name}}`}</code>
+                      <span>{variable.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <label>
+              <span>{isEditablePromptTemplate ? "提示词模板内容" : "配置内容"}</span>
+              <textarea ref={aiContentRef} className="code-textarea" value={aiForm.content} onChange={(event) => setAiForm({ ...aiForm, content: event.target.value })} />
+            </label>
+            <button className="primary-button" onClick={saveAiConfig} disabled={adminWorking}>{busyLabel("save-ai", "保存配置")}</button>
           </div>
         </section>
       )}

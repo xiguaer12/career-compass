@@ -274,6 +274,7 @@ public final class Dtos {
       String status,
       int likes,
       int favorites,
+      boolean featured,
       boolean liked,
       boolean favorited,
       int replies,

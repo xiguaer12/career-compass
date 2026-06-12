@@ -73,6 +73,13 @@ public class CompassService {
   private static final String REPORT_VERSION = "RPT-2026.05";
   private static final String PROMPT_VERSION = "PROMPT-2026.05";
   private static final String TEMPLATE_VERSION = "RPTTPL-2026.05";
+  private static final String ANSWER_FALLBACK_TEMPLATE = """
+      你正在追问：{question}
+
+      我会把这份报告里的综合正文、路径排序、行动计划和你补充的问题放在一起看。比较稳妥的做法是：先沿着报告里的主路径推进一轮低成本验证，同时保留一个备选路径的小时间块；如果接下来两周的新信息明显改变了你的约束条件，再调整主次顺序。
+
+      这类追问更适合结合你的最新补充继续细化，AI 建议只作为辅助判断，不代表录取、上岸或就业结果承诺。
+      """;
   private static final String GRADUATE_EMPLOYMENT_SOURCE_URL = "https://news.cctv.com/2025/11/20/ARTI0xYbzeyS5Y6Zky3R3VZg251120.shtml";
   private static final String POSTGRADUATE_SOURCE_URL = "https://news.cctv.cn/2025/11/24/ARTINT5iuLLp0mtEfdDd7Kkl251124.shtml";
   private static final String CIVIL_EXAM_SOURCE_URL = "https://www.gov.cn/lianbo/bumen/202510/content_7045734.htm";
@@ -80,6 +87,7 @@ public class CompassService {
   private static final List<String> CHART_IMPORT_COLORS = List.of(
       "#2563eb", "#0f766e", "#b45309", "#be123c", "#6d28d9", "#0284c7"
   );
+  private static final Pattern CONFIG_VARIABLE_PATTERN = Pattern.compile("\\{([A-Za-z][A-Za-z0-9_]*)\\}");
   private record AbuseTarget(String targetType, long targetId) {}
   private static final Map<String, List<String>> USST_COLLEGE_MAJORS = Map.ofEntries(
       Map.entry("能源与动力工程学院", List.of("过程装备与控制工程", "能源与动力工程", "新能源科学与工程", "储能科学与工程")),
@@ -801,7 +809,13 @@ public class CompassService {
     StudentProfile profile = me(user);
     List<Map<String, String>> messages = request == null || request.messages() == null ? List.of() : request.messages();
     InterviewResponse fallback = fallbackInterview(messages, profile);
-    InterviewResponse response = llmClient.interview(messages, profile, fallback);
+    InterviewResponse response = llmClient.interview(
+        messages,
+        profile,
+        latestAiConfigContent("interview_system_prompt", LlmClient.INTERVIEW_SYSTEM_PROMPT),
+        latestAiConfigContent("interview_user_prompt", LlmClient.INTERVIEW_USER_PROMPT_TEMPLATE),
+        fallback
+    );
     Map<String, Object> persistedAnswers = new LinkedHashMap<>(response.answers() == null ? Map.of() : response.answers());
     persistedAnswers.put("sourceMessages", interviewTranscript(messages, response.assistantMessage()));
     saveDraft(user, new AssessmentRequest(
@@ -1002,6 +1016,18 @@ public class CompassService {
     return rows.isEmpty() || !StringUtils.hasText(rows.getFirst()) ? fallback : rows.getFirst();
   }
 
+  private String renderAiConfigTemplate(String template, Map<String, String> variables) {
+    Matcher matcher = CONFIG_VARIABLE_PATTERN.matcher(template == null ? "" : template);
+    StringBuffer rendered = new StringBuffer();
+    while (matcher.find()) {
+      String variableName = matcher.group(1);
+      String replacement = variables.get(variableName);
+      matcher.appendReplacement(rendered, Matcher.quoteReplacement(replacement == null ? matcher.group(0) : replacement));
+    }
+    matcher.appendTail(rendered);
+    return rendered.toString().strip();
+  }
+
   private String latestAiConfigVersion(String type, String fallback) {
     List<String> rows = jdbc.query(
         """
@@ -1067,13 +1093,10 @@ public class CompassService {
     requireCompletedStudent(user);
     ensureLlmAvailable();
     String asked = question == null || !StringUtils.hasText(question.question()) ? "如何安排下一步行动" : question.question();
-    String fallbackText = """
-        你正在追问：%s
-
-        我会把这份报告里的综合正文、路径排序、行动计划和你补充的问题放在一起看。比较稳妥的做法是：先沿着报告里的主路径推进一轮低成本验证，同时保留一个备选路径的小时间块；如果接下来两周的新信息明显改变了你的约束条件，再调整主次顺序。
-
-        这类追问更适合结合你的最新补充继续细化，AI 建议只作为辅助判断，不代表录取、上岸或就业结果承诺。
-        """.formatted(asked).strip();
+    String fallbackText = renderAiConfigTemplate(
+        latestAiConfigContent("answer_fallback_template", ANSWER_FALLBACK_TEMPLATE),
+        Map.of("question", asked)
+    );
     AiAnswer fallback = new AiAnswer(
         "",
         List.of(),
@@ -1083,7 +1106,14 @@ public class CompassService {
         fallbackText
     );
     AiReport report = reportForQuestion(user, question).orElse(null);
-    AiAnswer answer = llmClient.answer(report, question, latestAiConfigContent("prompt", "围绕报告正文和访谈素材自由回答追问，可以自然展开分析，不需要按固定维度分栏；不输出录取、上岸、就业结果承诺。"), fallback);
+    AiAnswer answer = llmClient.answer(
+        report,
+        question,
+        latestAiConfigContent("answer_system_prompt", LlmClient.ANSWER_SYSTEM_PROMPT),
+        latestAiConfigContent("answer_user_prompt", LlmClient.ANSWER_USER_PROMPT_TEMPLATE),
+        latestAiConfigContent("prompt", "围绕报告正文和访谈素材自由回答追问，可以自然展开分析，不需要按固定维度分栏；不输出录取、上岸、就业结果承诺。"),
+        fallback
+    );
     reportIdForQuestion(user, question).ifPresent(reportId -> jdbc.update(
         "insert into ai_chat_message (student_id, report_id, question, answer_json) values (?, ?, ?, cast(? as json))",
         user.id(),
@@ -2374,9 +2404,16 @@ public class CompassService {
       if (("已驳回".equals(status) || "已下架".equals(status)) && !StringUtils.hasText(request.reason())) {
         throw new IllegalArgumentException("驳回或下架必须填写处置原因");
       }
+      boolean hideFromCommunityHighlights = "已驳回".equals(status) || "已下架".equals(status);
       int updated = StringUtils.hasText(request.expectedStatus())
-          ? jdbc.update("update community_post set status = ?, reject_reason = ?, updated_at = current_timestamp where id = ? and status = ?", status, request.reason(), request.id(), request.expectedStatus())
-          : jdbc.update("update community_post set status = ?, reject_reason = ?, updated_at = current_timestamp where id = ?", status, request.reason(), request.id());
+          ? jdbc.update(
+              "update community_post set status = ?, reject_reason = ?, pinned = case when ? then 0 else pinned end, featured = case when ? then 0 else featured end, updated_at = current_timestamp where id = ? and status = ?",
+              status, request.reason(), hideFromCommunityHighlights, hideFromCommunityHighlights, request.id(), request.expectedStatus()
+          )
+          : jdbc.update(
+              "update community_post set status = ?, reject_reason = ?, pinned = case when ? then 0 else pinned end, featured = case when ? then 0 else featured end, updated_at = current_timestamp where id = ?",
+              status, request.reason(), hideFromCommunityHighlights, hideFromCommunityHighlights, request.id()
+          );
       if (updated == 0) throwReviewConflictIfExists("community_post", request.id(), request.expectedStatus(), "帖子不存在");
       createMessage(findPostAuthor(request.id()), "审核", "社区内容审核结果", "你的社区内容状态已更新为：" + status + (StringUtils.hasText(request.reason()) ? "，原因：" + request.reason() : ""), "/community");
     }
@@ -2504,6 +2541,8 @@ public class CompassService {
               page.url(),
               page.title(),
               page.text(),
+              latestAiConfigContent("crawl_summary_system_prompt", LlmClient.CRAWL_SUMMARY_SYSTEM_PROMPT),
+              latestAiConfigContent("crawl_summary_user_prompt", LlmClient.CRAWL_SUMMARY_USER_PROMPT_TEMPLATE),
               fallback
           );
         } catch (Exception exception) {
@@ -2515,6 +2554,10 @@ public class CompassService {
           ));
         }
         if (parsedLooksIrrelevant(parsed)) {
+          irrelevant++;
+          continue;
+        }
+        if (parsedBelowAudienceQuality(parserRule, parsed)) {
           irrelevant++;
           continue;
         }
@@ -2539,7 +2582,7 @@ public class CompassService {
         resultMessage += "，过滤过旧 " + stale + " 条";
       }
       if (irrelevant > 0) {
-        resultMessage += "，过滤低相关 " + irrelevant + " 条";
+        resultMessage += "，过滤低相关或低适配 " + irrelevant + " 条";
       }
       if (!fetchErrors.isEmpty()) {
         resultMessage = trimText(resultMessage + "；部分页面已跳过或降级：" + String.join("；", fetchErrors), 500);
@@ -3040,12 +3083,46 @@ public class CompassService {
         || text.contains("无考公相关")
         || text.contains("与考公无关")
         || text.contains("无考研相关")
-        || text.contains("与考研无关");
+        || text.contains("与考研无关")
+        || text.contains("不适合上理工本科生")
+        || text.contains("对上理工本科生帮助有限")
+        || text.contains("缺少学生可执行信息");
+  }
+
+  private boolean parsedBelowAudienceQuality(Map<String, Object> parserRule, Map<String, Object> parsed) {
+    if (parsed == null || parsed.isEmpty()) return true;
+    int minScore = intRule(parserRule, "minAudienceQualityScore", 55, 0, 100);
+    int score = adjustedAudienceQualityScore(parsed);
+    return score < minScore;
+  }
+
+  private int adjustedAudienceQualityScore(Map<String, Object> parsed) {
+    int score = intFromObject(parsed.get("qualityScore"), 0);
+    String text = List.of("title", "summary", "body", "reason").stream()
+        .map(parsed::get)
+        .filter(Objects::nonNull)
+        .map(String::valueOf)
+        .collect(Collectors.joining(" "));
+    if (containsAny(text, lowValueCrawlKeywords())) {
+      score = Math.min(score, 40);
+    }
+    String path = String.valueOf(parsed.getOrDefault("path", "就业"));
+    int ruleScore = 20;
+    if (containsAny(text, usstAudienceKeywords())) ruleScore += 16;
+    if (containsAny(text, undergraduateActionKeywords())) ruleScore += 14;
+    if (containsAny(text, actionableCrawlKeywords())) ruleScore += 20;
+    if (containsAny(text, pathAudienceKeywords(path))) ruleScore += 10;
+    if (containsAny(text, usstMajorKeywords())) ruleScore += 10;
+    if (ruleScore >= 55 && !containsAny(text, lowValueCrawlKeywords())) {
+      score = Math.max(score, Math.min(95, ruleScore));
+    }
+    return score;
   }
 
   private Map<String, Object> enrichCrawlMetadata(Map<String, Object> parsed, CrawledPage page, String fingerprint) {
     Map<String, Object> enriched = new LinkedHashMap<>(parsed == null ? Map.of() : parsed);
     enriched.put("contentFingerprint", fingerprint);
+    enriched.put("targetAudience", "上海理工大学本科生");
     extractPublishedAt(page).ifPresent(value -> enriched.put("publishedAt", value.toString()));
     return enriched;
   }
@@ -3124,6 +3201,42 @@ public class CompassService {
           .toList();
     }
     return List.of();
+  }
+
+  private List<String> usstAudienceKeywords() {
+    return List.of("上海理工大学", "上理工", "USST", "usst", "上海市", "上海", "杨浦", "长三角", "华东");
+  }
+
+  private List<String> undergraduateActionKeywords() {
+    return List.of("本科", "本科生", "大学生", "应届", "毕业生", "高校毕业生", "2026届", "2027届", "大四", "大三", "在校生", "实习生");
+  }
+
+  private List<String> actionableCrawlKeywords() {
+    return List.of(
+        "报名", "截止", "岗位表", "职位表", "岗位代码", "专业要求", "资格条件", "资格复审",
+        "招聘", "校招", "实习", "宣讲", "双选", "招聘会", "投递", "录用",
+        "复试", "调剂", "专业目录", "招生简章", "考试科目", "劳动合同", "薪酬福利"
+    );
+  }
+
+  private List<String> pathAudienceKeywords(String path) {
+    return switch (path) {
+      case "考公" -> List.of("公务员", "事业单位", "招录", "考试录用", "三支一扶", "基层项目", "国考", "省考", "选调");
+      case "考研" -> List.of("硕士", "研究生", "招生", "推免", "复试", "调剂", "拟录取", "专业目录", "招生单位");
+      default -> List.of("就业", "招聘", "校招", "实习", "宣讲", "双选", "招聘会", "毕业生", "用人单位");
+    };
+  }
+
+  private List<String> usstMajorKeywords() {
+    return USST_COLLEGE_MAJORS.values().stream().flatMap(List::stream).toList();
+  }
+
+  private List<String> lowValueCrawlKeywords() {
+    return List.of(
+        "网站工作报表", "政府网站工作报表", "网站年度报表", "年度工作报表", "年度报告",
+        "机构设置", "领导信息", "领导活动", "门户首页", "网站首页", "首页导航", "纯导航",
+        "登录入口", "查询入口", "政策汇总", "页面无详细内容", "正文过短"
+    );
   }
 
   private boolean containsAny(String text, List<String> keywords) {
@@ -3420,12 +3533,9 @@ public class CompassService {
     String summary = firstSentence(page.text(), 180);
     String checklist = actionableChecklist(path);
     String nextStep = actionableNextStep(path);
-    int quality = switch (sourceField(source, "trust_level", "中")) {
-      case "高" -> 82;
-      case "低" -> 55;
-      default -> 68;
-    };
+    int quality = audienceFitScore(source, page);
     String body = "关键信息：" + valueOr(summary, "该来源已抓取到公开页面正文。")
+        + " 对上理本科生的作用：" + audienceValueHint(path)
         + " 学生应核对字段：" + checklist
         + " 下一步动作：" + nextStep
         + " 风险提醒：以来源原文、附件和报名系统为准；如果当前页面只是门户首页，需要继续进入具体公告、岗位页或下载附件后再判断。";
@@ -3436,8 +3546,41 @@ public class CompassService {
         "path", path,
         "tags", actionableTags(path, sourceType),
         "qualityScore", quality,
-        "reason", "按信息差字段生成候选：优先提示核对字段、时间节点、下一步动作和来源风险。"
+        "reason", "按上理工本科生适配度生成候选：优先提示核对字段、时间节点、下一步动作和来源风险。"
     );
+  }
+
+  private int audienceFitScore(Map<String, Object> source, CrawledPage page) {
+    String path = sourceField(source, "path", "就业");
+    String searchable = String.join(" ",
+        sourceField(source, "name", ""),
+        sourceField(source, "source_type", ""),
+        path,
+        valueOr(page.title(), ""),
+        valueOr(page.url(), ""),
+        trimText(page.text(), 1800)
+    );
+    int score = switch (sourceField(source, "trust_level", "中")) {
+      case "高" -> 38;
+      case "低" -> 22;
+      default -> 30;
+    };
+    if (containsAny(searchable, usstAudienceKeywords())) score += 16;
+    if (containsAny(searchable, undergraduateActionKeywords())) score += 16;
+    if (containsAny(searchable, actionableCrawlKeywords())) score += 22;
+    if (containsAny(searchable, pathAudienceKeywords(path))) score += 12;
+    if (containsAny(searchable, usstMajorKeywords())) score += 10;
+    if (containsAny(searchable, lowValueCrawlKeywords())) score -= 45;
+    if (page.text().length() < 180) score -= 12;
+    return Math.max(0, Math.min(100, score));
+  }
+
+  private String audienceValueHint(String path) {
+    return switch (path) {
+      case "考公" -> "帮助上理工本科生判断岗位限制、报名节点和资格复审风险，先排除不符合专业或学历条件的岗位。";
+      case "考研" -> "帮助上理工本科生核对招生单位、专业目录、复试调剂安排和学院细则，避免只看二手消息。";
+      default -> "帮助上理工本科生识别校招、实习、招聘会和应届生岗位机会，形成投递或到场清单。";
+    };
   }
 
   private String sourceField(Map<String, Object> source, String key, String fallback) {
@@ -3930,6 +4073,15 @@ public class CompassService {
     seedTag("计算机科学与技术", "专业标签", 1);
     seedTag("经验帖", "内容标签", 1);
     seedTag("问答", "内容标签", 2);
+    seedAiConfig("report_system_prompt", "RPT-SYS-2026.06", "报告生成系统提示词", LlmClient.REPORT_SYSTEM_PROMPT, "已发布");
+    seedAiConfig("report_user_prompt", "RPT-USER-2026.06", "报告生成用户提示词", LlmClient.REPORT_USER_PROMPT_TEMPLATE, "已发布");
+    seedAiConfig("answer_system_prompt", "ANS-SYS-2026.06", "报告追问系统提示词", LlmClient.ANSWER_SYSTEM_PROMPT, "已发布");
+    seedAiConfig("answer_user_prompt", "ANS-USER-2026.06", "报告追问用户提示词", LlmClient.ANSWER_USER_PROMPT_TEMPLATE, "已发布");
+    seedAiConfig("interview_system_prompt", "INT-SYS-2026.06", "AI 访谈系统提示词", LlmClient.INTERVIEW_SYSTEM_PROMPT, "已发布");
+    seedAiConfig("interview_user_prompt", "INT-USER-2026.06", "AI 访谈用户提示词", LlmClient.INTERVIEW_USER_PROMPT_TEMPLATE, "已发布");
+    seedAiConfig("crawl_summary_system_prompt", "CRAWL-SYS-2026.06", "资讯抓取摘要系统提示词", LlmClient.CRAWL_SUMMARY_SYSTEM_PROMPT, "已发布");
+    seedAiConfig("crawl_summary_user_prompt", "CRAWL-USER-2026.06", "资讯抓取摘要用户提示词", LlmClient.CRAWL_SUMMARY_USER_PROMPT_TEMPLATE, "已发布");
+    seedAiConfig("answer_fallback_template", "ANS-FALLBACK-2026.06", "报告追问兜底回答模板", ANSWER_FALLBACK_TEMPLATE, "已发布");
     seedAiConfig("questionnaire", QUESTIONNAIRE_VERSION, "开放访谈素材模板", "围绕学生原始叙述、关键经历、价值取向、现实约束、情绪压力、资源条件、路径假设和未说透的矛盾进行开放整理。", "已发布");
     seedAiConfig("report_template", TEMPLATE_VERSION, "开放式报告模板", "基于学生开放访谈素材直接写一篇完整自然语言报告。可以比较考公、考研、就业，也可以按学生真实情况自由组织判断，并自然解释系统动态评分和推荐排序。", "已发布");
     seedAiConfig("prompt", PROMPT_VERSION, "报告生成提示词", "像读完访谈记录的咨询老师一样综合判断学生经历、动机、约束、情绪压力、资源条件和未说透的矛盾；结合考公、考研、就业三路径动态评分解释推荐排序；报告只供辅助决策，不输出录取、上岸、就业结果承诺。", "已发布");
@@ -4072,6 +4224,7 @@ public class CompassService {
         "maxLinks", 12,
         "maxPages", 5,
         "minScore", 2,
+        "minAudienceQualityScore", 55,
         "includeKeywords", List.of(includeKeywords),
         "excludeKeywords", List.of("登录", "注册", "客户端下载", "APP下载", "帮助", "版权声明")
     );
@@ -4263,6 +4416,7 @@ public class CompassService {
         rs.getString("status"),
         rs.getInt("likes"),
         rs.getInt("favorites"),
+        booleanColumnOrFalse(rs, "featured"),
         booleanColumnOrFalse(rs, "liked"),
         booleanColumnOrFalse(rs, "favorited"),
         rs.getInt("replies"),
@@ -4294,6 +4448,8 @@ public class CompassService {
             questionnaireVersion,
             TEMPLATE_VERSION,
             PROMPT_VERSION,
+            latestAiConfigContent("report_system_prompt", LlmClient.REPORT_SYSTEM_PROMPT),
+            latestAiConfigContent("report_user_prompt", LlmClient.REPORT_USER_PROMPT_TEMPLATE),
             latestAiConfigContent("report_template", "基于学生开放访谈素材直接写一篇完整自然语言报告，并自然解释系统已计算的考公、考研、就业动态评分。"),
             latestAiConfigContent("prompt", "像读完访谈记录的咨询老师一样综合判断学生经历、动机、约束、情绪压力、资源条件和未说透的矛盾；结合三路径动态评分解释推荐排序；报告只供辅助决策，不输出录取、上岸、就业结果承诺。"),
             latestAiConfigContent("disclaimer", "AI 报告仅供辅助决策，不替代学生最终选择。"),
