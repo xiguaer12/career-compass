@@ -940,28 +940,46 @@ function buildChartDataPayload(
   valueKeys: string[],
   editorRows: ChartDataRow[],
   insightsText: string,
-  valueLabels: Record<string, string> = {}
+  valueLabels: Record<string, string> = {},
+  preserveEmptyRows = false
 ) {
+  const isTimelineChart = chartType.includes("时间线");
   const normalizedValueKeys = valueKeys.length > 0 ? valueKeys : ["数值"];
-  const rows = editorRows
-    .map((row) => {
-      const next: ChartDataRow = {
-        [labelKey]: String(row[labelKey] ?? "").trim()
-      };
-      normalizedValueKeys.forEach((key) => {
-        next[key] = normalizeChartNumber(row[key]);
-      });
-      if (typeof row.color === "string" && row.color.trim()) {
-        next.color = row.color.trim();
-      }
-      return next;
-    })
-    .filter((row) => String(row[labelKey] ?? "").trim() || normalizedValueKeys.some((key) => String(row[key] ?? "").trim()));
+  const rows = isTimelineChart
+    ? editorRows
+        .map((row) => ({
+          stage: String(row.stage ?? row[labelKey] ?? "").trim(),
+          description: String(row.description ?? row[normalizedValueKeys[0]] ?? "").trim()
+        }))
+        .filter((row) => preserveEmptyRows || row.stage || row.description)
+    : editorRows
+        .map((row) => {
+          const next: ChartDataRow = {
+            [labelKey]: String(row[labelKey] ?? "").trim()
+          };
+          normalizedValueKeys.forEach((key) => {
+            next[key] = normalizeChartNumber(row[key]);
+          });
+          if (typeof row.color === "string" && row.color.trim()) {
+            next.color = row.color.trim();
+          }
+          return next;
+        })
+        .filter((row) => preserveEmptyRows
+          || String(row[labelKey] ?? "").trim()
+          || normalizedValueKeys.some((key) => String(row[key] ?? "").trim()));
   const nextData: Record<string, unknown> = {
     ...baseData,
     rows,
     insights: splitLines(insightsText)
   };
+  if (isTimelineChart) {
+    delete nextData.nameKey;
+    delete nextData.valueKey;
+    delete nextData.xKey;
+    delete nextData.series;
+    return nextData;
+  }
   if (chartType.includes("环") || chartType.includes("饼")) {
     nextData.nameKey = labelKey;
     nextData.valueKey = normalizedValueKeys[0];
@@ -3882,8 +3900,9 @@ function AdminView() {
   const adminWorking = Boolean(adminBusy);
   const busyLabel = (key: string, label: string) => adminBusy === key ? "处理中" : label;
   const chartDataDraft = safeJsonRecord(chartForm.dataText);
-  const chartLabelKey = chartLabelKeyFromData(chartDataDraft);
-  const chartValueKeys = chartValueKeysFromData(chartDataDraft, chartLabelKey);
+  const isTimelineChart = chartForm.chartType.includes("时间线");
+  const chartLabelKey = isTimelineChart ? "stage" : chartLabelKeyFromData(chartDataDraft);
+  const chartValueKeys = isTimelineChart ? ["description"] : chartValueKeysFromData(chartDataDraft, chartLabelKey);
   const chartValueLabels = Object.fromEntries(chartValueKeys.map((key) => [key, chartValueLabelFromData(chartDataDraft, key)]));
   const chartEditorRows = chartRowsForEditor(chartDataDraft, chartLabelKey, chartValueKeys);
   const chartInsightsText = chartInsightsTextFromData(chartDataDraft);
@@ -3906,16 +3925,18 @@ function AdminView() {
   function updateChartDataDraft(rows: ChartDataRow[], valueKeys = chartValueKeys, insightsText = chartInsightsText) {
     setChartForm((current) => {
       const baseData = safeJsonRecord(current.dataText);
-      const labelKey = chartLabelKeyFromData(baseData);
+      const labelKey = current.chartType.includes("时间线") ? "stage" : chartLabelKeyFromData(baseData);
       const valueLabels = Object.fromEntries(valueKeys.map((key) => [key, chartValueLabelFromData(baseData, key)]));
-      const nextData = buildChartDataPayload(baseData, current.chartType, labelKey, valueKeys, rows, insightsText, valueLabels);
+      const nextData = buildChartDataPayload(baseData, current.chartType, labelKey, valueKeys, rows, insightsText, valueLabels, true);
       return { ...current, dataText: JSON.stringify(nextData, null, 2) };
     });
   }
 
   function updateChartCell(rowIndex: number, key: string, value: string) {
     const nextRows = chartEditorRows.map((row, index) => (
-      index === rowIndex ? { ...row, [key]: key === chartLabelKey ? value : normalizeChartNumber(value) } : row
+      index === rowIndex
+        ? { ...row, [key]: key === chartLabelKey || isTimelineChart ? value : normalizeChartNumber(value) }
+        : row
     ));
     updateChartDataDraft(nextRows);
   }
@@ -3941,7 +3962,16 @@ function AdminView() {
         key,
         keyIndex === index ? value : chartValueLabelFromData(baseData, key)
       ]));
-      const nextData = buildChartDataPayload(baseData, current.chartType, labelKey, valueKeys, chartRowsFromData(baseData), chartInsightsTextFromData(baseData), valueLabels);
+      const nextData = buildChartDataPayload(
+        baseData,
+        current.chartType,
+        labelKey,
+        valueKeys,
+        chartRowsFromData(baseData),
+        chartInsightsTextFromData(baseData),
+        valueLabels,
+        true
+      );
       return { ...current, dataText: JSON.stringify(nextData, null, 2) };
     });
   }
@@ -4265,19 +4295,29 @@ function AdminView() {
     if (!admin) return;
     await runAdminAction("save-chart", async () => {
       const rawData = parseJsonRecord(chartForm.dataText, "图表数据");
-      const labelKey = chartLabelKeyFromData(rawData);
-      const valueKeys = chartValueKeysFromData(rawData, labelKey);
+      const timelineChart = chartForm.chartType.includes("时间线");
+      const labelKey = timelineChart ? "stage" : chartLabelKeyFromData(rawData);
+      const valueKeys = timelineChart ? ["description"] : chartValueKeysFromData(rawData, labelKey);
       const data = buildChartDataPayload(rawData, chartForm.chartType, labelKey, valueKeys, chartRowsFromData(rawData), chartInsightsTextFromData(rawData));
       const rows = chartRowsFromData(data);
       if (rows.length === 0) {
         throw new Error("图表数据至少需要填写一行真实数据");
       }
-      const hasInvalidNumber = rows.some((row) => valueKeys.some((key) => {
-        const value = row[key];
-        return value !== "" && !Number.isFinite(Number(value));
-      }));
-      if (hasInvalidNumber) {
-        throw new Error("图表数据的数值列只能填写数字");
+      if (timelineChart) {
+        const hasIncompleteRow = rows.some((row) => (
+          !String(row.stage ?? "").trim() || !String(row.description ?? "").trim()
+        ));
+        if (hasIncompleteRow) {
+          throw new Error("时间线的每一行都需要填写阶段和描述");
+        }
+      } else {
+        const hasInvalidNumber = rows.some((row) => valueKeys.some((key) => {
+          const value = row[key];
+          return value !== "" && !Number.isFinite(Number(value));
+        }));
+        if (hasInvalidNumber) {
+          throw new Error("图表数据的数值列只能填写数字");
+        }
       }
       const filters = safeJsonRecord(chartForm.filtersText);
       await adminApi.saveChart(admin.token, {
@@ -5024,7 +5064,13 @@ function AdminView() {
                 <div className="queue-item" key={`candidate-${candidate.id}`}>
                   <div>
                     <strong>{candidate.title}</strong>
-                    <span>{candidate.sourceName} · {candidate.path} · 质量 {candidate.qualityScore ?? 0} · {candidate.reviewStatus} · 抓取 {formatAdminTime(candidate.crawledAt)}</span>
+                    <span>
+                      {candidate.sourceName} · {candidate.path} · 最终质量 {candidate.qualityScore ?? 0}
+                      {candidate.rawQualityScore != null && candidate.rawQualityScore !== candidate.qualityScore
+                        ? `（AI 原始 ${candidate.rawQualityScore}）`
+                        : ""}
+                      {" · "}{candidate.reviewStatus} · 抓取 {formatAdminTime(candidate.crawledAt)}
+                    </span>
                     <p>{candidate.summary}</p>
                     {candidate.reason && <small>{candidate.reason}</small>}
                     {candidate.failureReason && <small>驳回原因：{candidate.failureReason}</small>}
@@ -5169,36 +5215,44 @@ function AdminView() {
               <div className="chart-table-head">
                 <div>
                   <strong>图表数据表</strong>
-                  <span>第一列写名称，后面的列填写数字；导入 Excel/CSV 后也会显示在这里。</span>
+                  <span>
+                    {isTimelineChart
+                      ? "时间线固定使用“阶段”和“描述”两列，新增或删除行后保存即可同步到图表。"
+                      : "第一列写名称，后面的列填写数字；导入 Excel/CSV 后也会显示在这里。"}
+                  </span>
                 </div>
                 <button type="button" className="secondary-button" onClick={addChartRow}>
                   <Plus size={16} />
                   新增一行
                 </button>
               </div>
-              <div className="chart-series-editor">
-                <strong>数据列</strong>
-                {chartValueKeys.map((key, index) => (
-                  <div className="chart-series-field" key={`${key}-${index}`}>
-                    <input value={chartValueLabels[key] || key} onChange={(event) => updateChartValueLabel(index, event.target.value)} aria-label={`第 ${index + 1} 个数据列名称`} />
-                    {chartValueKeys.length > 1 && (
-                      <button type="button" className="icon-button danger-icon" onClick={() => removeChartValueColumn(index)} aria-label={`删除 ${chartValueLabels[key] || key} 数据列`}>
-                        <Trash2 size={15} />
-                      </button>
-                    )}
-                  </div>
-                ))}
-                <button type="button" className="secondary-button" onClick={addChartValueColumn}>
-                  <Plus size={16} />
-                  新增一列
-                </button>
-              </div>
+              {!isTimelineChart && (
+                <div className="chart-series-editor">
+                  <strong>数据列</strong>
+                  {chartValueKeys.map((key, index) => (
+                    <div className="chart-series-field" key={`${key}-${index}`}>
+                      <input value={chartValueLabels[key] || key} onChange={(event) => updateChartValueLabel(index, event.target.value)} aria-label={`第 ${index + 1} 个数据列名称`} />
+                      {chartValueKeys.length > 1 && (
+                        <button type="button" className="icon-button danger-icon" onClick={() => removeChartValueColumn(index)} aria-label={`删除 ${chartValueLabels[key] || key} 数据列`}>
+                          <Trash2 size={15} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <button type="button" className="secondary-button" onClick={addChartValueColumn}>
+                    <Plus size={16} />
+                    新增一列
+                  </button>
+                </div>
+              )}
               <div className="chart-data-table">
                 <table>
                   <thead>
                     <tr>
-                      <th>名称</th>
-                      {chartValueKeys.map((key) => <th key={key}>{chartValueLabels[key] || key}</th>)}
+                      <th>{isTimelineChart ? "阶段" : "名称"}</th>
+                      {chartValueKeys.map((key) => (
+                        <th key={key}>{isTimelineChart ? "描述" : chartValueLabels[key] || key}</th>
+                      ))}
                       <th>操作</th>
                     </tr>
                   </thead>
@@ -5209,17 +5263,25 @@ function AdminView() {
                           <input
                             value={String(row[chartLabelKey] ?? "")}
                             onChange={(event) => updateChartCell(rowIndex, chartLabelKey, event.target.value)}
-                            placeholder="例如 2026 / 就业 / 国企央企"
+                            placeholder={isTimelineChart ? "例如 9-10 月" : "例如 2026 / 就业 / 国企央企"}
                           />
                         </td>
                         {chartValueKeys.map((key) => (
                           <td key={key}>
-                            <input
-                              inputMode="decimal"
-                              value={String(row[key] ?? "")}
-                              onChange={(event) => updateChartCell(rowIndex, key, event.target.value)}
-                              placeholder="0"
-                            />
+                            {isTimelineChart ? (
+                              <textarea
+                                value={String(row[key] ?? "")}
+                                onChange={(event) => updateChartCell(rowIndex, key, event.target.value)}
+                                placeholder="请输入该阶段的关键行动或说明"
+                              />
+                            ) : (
+                              <input
+                                inputMode="decimal"
+                                value={String(row[key] ?? "")}
+                                onChange={(event) => updateChartCell(rowIndex, key, event.target.value)}
+                                placeholder="0"
+                              />
+                            )}
                           </td>
                         ))}
                         <td className="chart-row-actions">

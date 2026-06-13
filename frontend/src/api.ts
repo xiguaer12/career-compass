@@ -275,6 +275,7 @@ export type CrawlCandidateItem = {
   parsedAt?: string;
   publishedAt?: string;
   qualityScore?: number;
+  rawQualityScore?: number;
   reason?: string;
   tags?: string;
 };

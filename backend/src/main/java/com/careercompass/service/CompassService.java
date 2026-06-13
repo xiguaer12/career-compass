@@ -2557,6 +2557,7 @@ public class CompassService {
           irrelevant++;
           continue;
         }
+        parsed = normalizeAudienceQualityScores(parsed);
         if (parsedBelowAudienceQuality(parserRule, parsed)) {
           irrelevant++;
           continue;
@@ -3097,7 +3098,7 @@ public class CompassService {
   }
 
   private int adjustedAudienceQualityScore(Map<String, Object> parsed) {
-    int score = intFromObject(parsed.get("qualityScore"), 0);
+    int score = intFromObject(parsed.getOrDefault("rawQualityScore", parsed.get("qualityScore")), 0);
     String text = List.of("title", "summary", "body", "reason").stream()
         .map(parsed::get)
         .filter(Objects::nonNull)
@@ -3106,17 +3107,15 @@ public class CompassService {
     if (containsAny(text, lowValueCrawlKeywords())) {
       score = Math.min(score, 40);
     }
-    String path = String.valueOf(parsed.getOrDefault("path", "就业"));
-    int ruleScore = 20;
-    if (containsAny(text, usstAudienceKeywords())) ruleScore += 16;
-    if (containsAny(text, undergraduateActionKeywords())) ruleScore += 14;
-    if (containsAny(text, actionableCrawlKeywords())) ruleScore += 20;
-    if (containsAny(text, pathAudienceKeywords(path))) ruleScore += 10;
-    if (containsAny(text, usstMajorKeywords())) ruleScore += 10;
-    if (ruleScore >= 55 && !containsAny(text, lowValueCrawlKeywords())) {
-      score = Math.max(score, Math.min(95, ruleScore));
-    }
-    return score;
+    return Math.max(0, Math.min(100, score));
+  }
+
+  private Map<String, Object> normalizeAudienceQualityScores(Map<String, Object> parsed) {
+    Map<String, Object> normalized = new LinkedHashMap<>(parsed == null ? Map.of() : parsed);
+    int rawScore = intFromObject(normalized.getOrDefault("rawQualityScore", normalized.get("qualityScore")), 0);
+    normalized.put("rawQualityScore", rawScore);
+    normalized.put("qualityScore", adjustedAudienceQualityScore(normalized));
+    return normalized;
   }
 
   private Map<String, Object> enrichCrawlMetadata(Map<String, Object> parsed, CrawledPage page, String fingerprint) {
@@ -3927,16 +3926,16 @@ public class CompassService {
     );
     seedPost(1, "从光电专业转软件测试岗，我把项目经历这样改成简历亮点", "围绕课程设计、实习、比赛三个材料，把经历拆成问题、动作、结果三段。", "经验帖", "就业", false, 126, 58, 18);
     seedPost(2, "省考和事业单位能不能同时准备？时间怎么分配更稳", "公共科目可复用，但岗位表筛选、申论材料和面试准备要分开管理。", "问答", "考公", true, 88, 41, 24);
-    seedSource(1, "研招网考研资讯", "考研政策与动态", "https://yz.chsi.com.cn/", "每日", "考研", "高", "启用", realtimeRule(180, "考研", "硕士", "研究生", "招生", "复试", "调剂", "网报"));
-    seedSource(2, "研招网网报公告", "网报公告", "https://yz.chsi.com.cn/sswbgg/", "每日", "考研", "高", "启用", realtimeRule(180, "网报", "公告", "报考点", "招生单位", "研究生"));
-    seedSource(3, "上海理工大学研究生招生网", "校内研招公告", "https://yz.usst.edu.cn/", "每日", "考研", "高", "启用", realtimeRule(180, "硕士", "研究生", "招生", "复试", "调剂", "公告"));
-    seedSource(4, "中国政府网部门动态", "公职政策与部门动态", "https://www.gov.cn/lianbo/bumen/", "每小时", "考公", "高", "启用", realtimeRule(90, "公务员", "录用", "事业单位", "考试", "面试", "就业"));
+    seedSource(1, "研招网考研资讯", "考研政策与动态", "https://yz.chsi.com.cn/", "手动", "考研", "高", "启用", realtimeRule(180, "考研", "硕士", "研究生", "招生", "复试", "调剂", "网报"));
+    seedSource(2, "研招网网报公告", "网报公告", "https://yz.chsi.com.cn/sswbgg/", "手动", "考研", "高", "启用", realtimeRule(180, "网报", "公告", "报考点", "招生单位", "研究生"));
+    seedSource(3, "上海理工大学研究生招生网", "校内研招公告", "https://yz.usst.edu.cn/", "手动", "考研", "高", "启用", realtimeRule(180, "硕士", "研究生", "招生", "复试", "调剂", "公告"));
+    seedSource(4, "北京市人力资源社会保障局", "公职政策与部门动态", "https://rsj.beijing.gov.cn/xxgk/gkzp/", "手动", "考公", "高", "启用", realtimeRule(90, "公务员", "录用", "事业单位", "考试", "面试", "就业"));
     seedSource(5, "中国人力资源市场网三支一扶公告", "基层项目公告", "https://chrm.mohrss.gov.cn/%e9%ab%98%e6%a0%a1%e6%af%95%e4%b8%9a%e7%94%9f%e4%b8%89%e6%94%af%e4%b8%80%e6%89%b6%e8%ae%a1%e5%88%92/%e5%85%ac%e5%91%8a%e5%85%ac%e7%a4%ba/", "每日", "考公", "高", "启用", realtimeRule(180, "三支一扶", "基层", "公告", "公示", "招募", "报名"));
-    seedSource(6, "上海人社事业单位招聘公告", "事业单位招聘公告", "https://rsj.sh.gov.cn/tzpgg_17408/index.html", "每日", "考公", "高", "启用", realtimeRule(180, "事业单位", "招聘", "公告", "考试", "面试"));
-    seedSource(7, "中国人力资源市场网新闻报道", "就业资讯与政策", "https://chrm.mohrss.gov.cn/%e6%96%b0%e9%97%bb%e6%8a%a5%e9%81%93/", "每小时", "就业", "高", "启用", realtimeRule(120, "高校毕业生", "就业", "招聘", "岗位", "创业", "政策"));
-    seedSource(8, "中国政府网最新政策", "就业与升学政策", "https://www.gov.cn/zhengce/zuixin/", "每日", "就业", "高", "启用", realtimeRule(120, "就业", "高校毕业生", "招聘", "创业", "教育", "考试"));
-    seedSource(9, "中国人力资源市场网政策通知", "就业政策通知", "https://chrm.mohrss.gov.cn/%e6%94%bf%e7%ad%96%e9%80%9a%e7%9f%a5/", "每日", "就业", "高", "启用", realtimeRule(180, "就业", "招聘", "高校毕业生", "创业", "教育", "人才"));
-    seedSource(10, "上海理工大学就业信息网", "校内招聘与宣讲会", "https://91.usst.edu.cn/", "每日", "就业", "高", "启用", realtimeRule(120, "招聘", "宣讲", "校招", "实习", "就业"));
+    seedSource(6, "上海人社事业单位招聘公告", "事业单位招聘公告", "https://rsj.sh.gov.cn/tzpgg_17408/index.html", "手动", "考公", "高", "启用", realtimeRule(180, "事业单位", "招聘", "公告", "考试", "面试"));
+    seedSource(7, "中国人力资源市场网新闻报道", "就业资讯与政策", "https://chrm.mohrss.gov.cn/%e6%96%b0%e9%97%bb%e6%8a%a5%e9%81%93/", "手动", "就业", "高", "启用", realtimeRule(120, "高校毕业生", "就业", "招聘", "岗位", "创业", "政策"));
+    seedSource(8, "国家大学生就业服务平台", "就业与升学政策", "https://ncss.cn/ncss/jydt/jy", "手动", "就业", "高", "启用", realtimeRule(120, "就业", "高校毕业生", "招聘", "创业", "教育", "考试"));
+    seedSource(9, "中国人力资源市场网政策通知", "就业政策通知", "https://chrm.mohrss.gov.cn/%e6%94%bf%e7%ad%96%e9%80%9a%e7%9f%a5/", "手动", "就业", "高", "启用", realtimeRule(180, "就业", "招聘", "高校毕业生", "创业", "教育", "人才"));
+    seedSource(10, "上海理工大学就业信息网", "校内招聘与宣讲会", "https://91.usst.edu.cn/", "手动", "就业", "高", "启用", realtimeRule(120, "招聘", "宣讲", "校招", "实习", "就业"));
     seedChart(1, "2024-2026 高校毕业生规模", "趋势图", "全部", Map.of(
         "rows", List.of(
             Map.of("year", "2024", "graduates", 1179),
@@ -4584,7 +4583,7 @@ public class CompassService {
   }
 
   private CrawlCandidateItem mapCandidate(ResultSet rs) throws java.sql.SQLException {
-    Map<String, Object> parsed = jsonToMap(rs.getString("parsed_json"));
+    Map<String, Object> parsed = normalizeAudienceQualityScores(jsonToMap(rs.getString("parsed_json")));
     return new CrawlCandidateItem(
         rs.getLong("id"),
         rs.getLong("source_id"),
@@ -4599,6 +4598,7 @@ public class CompassService {
         toInstantString(rs.getTimestamp("parsed_at")),
         toInstantString(rs.getTimestamp("published_at")),
         intFromObject(parsed.get("qualityScore"), 0),
+        intFromObject(parsed.get("rawQualityScore"), 0),
         String.valueOf(parsed.getOrDefault("reason", "")),
         tagsFromParsed(parsed, String.valueOf(parsed.getOrDefault("path", "")))
     );
