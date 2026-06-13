@@ -387,6 +387,7 @@ public final class Dtos {
       String parsedAt,
       String publishedAt,
       int qualityScore,
+      int rawQualityScore,
       String reason,
       String tags
   ) {}

@@ -951,6 +951,12 @@ textarea:focus-visible {
   min-width: 132px;
 }
 
+.chart-data-table textarea {
+  min-width: 360px;
+  min-height: 72px;
+  resize: vertical;
+}
+
 .chart-data-table th:first-child,
 .chart-data-table td:first-child input {
   min-width: 210px;
